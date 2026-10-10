@@ -18,7 +18,7 @@ import MenuScreen from './src/screens/MenuScreen';
 import DeliveryExecutiveScreen from './src/screens/DeliveryExecutiveScreen';
 import FilteredOrdersScreen from './src/screens/FilteredOrdersScreen';
 import ClientSettingsScreen from './src/screens/ClientSettingsScreen';
-import WhatsAppOrderMessageScreen from './src/screens/Whatsappordermessagescreen';
+import WhatsAppOrderMessageScreen from './src/screens/WhatsAppOrderMessageScreen';
 
 // ─── Sidebar layout constants ─────────────────────────────────────────────────
 const SIDEBAR_EXPANDED  = 240;
