@@ -21,7 +21,7 @@ export default function AdminLoginScreen({ onLogin }) {
       const q = query(collection(db, 'admins'), where('email', '==', email.toLowerCase().trim()));
       const snap = await getDocs(q);
       if (snap.empty) { Alert.alert("Login Failed", "Admin not found"); setLoading(false); return; }
-      onLogin({ id: snap.docs[0].id, ...snap.docs[0].data() }, 'admin');
+      await onLogin({ id: snap.docs[0].id, ...snap.docs[0].data() }, 'admin');
     } catch (authErr) {
       // Fallback: old Firestore check for existing admins without Auth account
       if (authErr.code === 'auth/user-not-found' || authErr.code === 'auth/invalid-credential') {
@@ -40,7 +40,7 @@ export default function AdminLoginScreen({ onLogin }) {
             });
             if (res.ok) { try { await signInWithEmailAndPassword(auth, email.toLowerCase().trim(), password); } catch (_) {} }
           } catch (_) { /* Backend unreachable — proceed with fallback auth */ }
-          onLogin({ id: snap.docs[0].id, ...adminData }, 'admin');
+          await onLogin({ id: snap.docs[0].id, ...adminData }, 'admin');
         } catch (fallbackErr) {
           Alert.alert("Login Failed", fallbackErr.message);
         }
