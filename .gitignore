@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.production
+.expo/
+dist/
+test-export/
+*.log
+backend/serviceAccountKey.json
+backend/.env.production
