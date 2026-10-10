@@ -18,7 +18,7 @@ import {
   StyleSheet,
   Platform,
 } from "react-native";
-import * as wa from "../services/whatsappApi";
+import * as wa from "../services/Whatsappapi";
 
 const C = {
   bg: "#F5F6F8",
