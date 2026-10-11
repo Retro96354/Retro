@@ -115,7 +115,6 @@ export default function ClientLoginScreen({ onLogin }) {
           <View style={styles.logoIconBox}>
             <Ionicons name="restaurant" size={24} color="#fff" />
           </View>
-          <Text style={styles.title}>MIGME</Text>
           <Text style={styles.subtitle}>Sign in to manage your catering operations</Text>
         </View>
         <View style={styles.form}>
