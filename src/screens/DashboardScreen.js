@@ -18,6 +18,9 @@ const SOUND_OPTIONS = [
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const TODAY_FILTER_KEY = 'dashboard_today_only';
+const AUTO_PRINT_KEY = 'dashboard_auto_print';
+const AUTO_PRINT_DELAY_MS = 10000; // order aane ke 10 sec baad print (11000/12000 bhi kar sakte ho)
+const AUTO_PRINT_GAP_MS = 3000;    // do orders ek saath aaye to unke beech ka gap
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Responsive breakpoint — below this width we switch the table's column
@@ -560,6 +563,22 @@ export default function DashboardScreen({ clientId }) {
     catch { return false; }
   });
 
+  // ── Auto-print toggle — localStorage me persist ──
+const [autoPrint, setAutoPrint] = useState(() => {
+  try { return localStorage.getItem(AUTO_PRINT_KEY) === 'true'; }
+  catch { return false; }
+});
+
+// Refs: onSnapshot ka callback purana closure pakadta hai, isliye latest values refs se
+const autoPrintRef   = useRef(autoPrint);
+const ordersRef      = useRef([]);
+const handlePrintRef = useRef(null);
+const autoTimersRef  = useRef({});            // orderId -> timeout
+const autoDoneRef    = useRef(new Set());     // jo order already schedule/print ho chuke
+const printChainRef  = useRef(Promise.resolve()); // orders ek-ek karke print hon
+
+autoPrintRef.current = autoPrint;
+
   // ── Pagination ──
   const [currentPage, setCurrentPage]   = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(50);
@@ -579,6 +598,46 @@ export default function DashboardScreen({ clientId }) {
     setCurrentPage(1);
     try { localStorage.setItem(TODAY_FILTER_KEY, String(next)); } catch {}
   };
+
+  const handleAutoPrintToggle = () => {
+  const next = !autoPrint;
+  setAutoPrint(next);
+  try { localStorage.setItem(AUTO_PRINT_KEY, String(next)); } catch {}
+
+  // OFF karte hi pending timers cancel
+  if (!next) {
+    Object.values(autoTimersRef.current).forEach(clearTimeout);
+    autoTimersRef.current = {};
+  }
+};
+
+// Sirf refs use karta hai, isliye snapshot ke andar se safely call ho sakta hai
+const scheduleAutoPrint = (orderId) => {
+  if (Platform.OS !== 'web') return;
+  if (autoDoneRef.current.has(orderId)) return;
+  autoDoneRef.current.add(orderId);
+
+  autoTimersRef.current[orderId] = setTimeout(() => {
+    delete autoTimersRef.current[orderId];
+    if (!autoPrintRef.current) return;
+
+    // Latest order data lo, aur check karo abhi bhi print layak hai
+    const latest = ordersRef.current.find(o => o.id === orderId);
+    if (!latest || !VISIBLE_STATUSES.includes(latest.status)) return;
+
+    // Queue: ek order ka print khatam hone ke baad hi agla
+    printChainRef.current = printChainRef.current.then(async () => {
+      if (!autoPrintRef.current) return;
+      await handlePrintRef.current?.(latest);
+      await new Promise(r => setTimeout(r, AUTO_PRINT_GAP_MS));
+    });
+  }, AUTO_PRINT_DELAY_MS);
+};
+
+// Unmount par timers saaf
+useEffect(() => () => {
+  Object.values(autoTimersRef.current).forEach(clearTimeout);
+}, []);
 
   // ── Today's date string for comparison (YYYY-MM-DD) ──
   const getTodayStr = () => {
@@ -641,10 +700,14 @@ export default function DashboardScreen({ clientId }) {
         return timeA.localeCompare(timeB);
       });
       setOrders(list);
+      ordersRef.current = list;
       setLoading(false);
 
       if (isFirstLoad.current) { isFirstLoad.current = false; return; }
-      snapshot.docChanges().forEach((change) => { if (change.type === 'added') playAlert(); });
+      snapshot.docChanges().forEach((change) => { if (change.type === 'added') { playAlert(); 
+        if (autoPrintRef.current) scheduleAutoPrint(change.doc.id);  
+      }
+       });
     }, (error) => { Alert.alert('Sync Error', error.message); });
 
     const unsubscribeExecs = onSnapshot(
@@ -848,6 +911,8 @@ export default function DashboardScreen({ clientId }) {
     }
   };
 
+  handlePrintRef.current = handlePrint; 
+
   const openAssignModal = (order, pos) => {
     setSelectedOrder(order);
     setDropdownPos(pos);
@@ -914,7 +979,7 @@ export default function DashboardScreen({ clientId }) {
   return (
     <SafeAreaView style={styles.container}>
 
-      {/* ── Top bar ── */}
+            {/* ── Top bar ── */}
       <View style={styles.topBar}>
         <View>
           <Text style={styles.heading}>Active Orders</Text>
@@ -926,24 +991,48 @@ export default function DashboardScreen({ clientId }) {
           </View>
         </View>
 
-        {/* Today Only toggle button */}
-        <TouchableOpacity
-          style={[styles.todayBtn, todayOnly && styles.todayBtnActive]}
-          onPress={handleTodayToggle}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name={todayOnly ? 'today' : 'today-outline'}
-            size={15}
-            color={todayOnly ? '#ffffff' : '#0f172a'}
-          />
-          <Text style={[styles.todayBtnText, todayOnly && styles.todayBtnTextActive]}>
-            Today Only
-          </Text>
-          {todayOnly && (
-            <View style={styles.todayActiveDot} />
-          )}
-        </TouchableOpacity>
+        {/* Buttons row: Auto Print + Today Only */}
+        <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
+
+          {/* ✅ NEW: Auto Print toggle button */}
+          <TouchableOpacity
+            style={[styles.todayBtn, autoPrint && styles.autoPrintBtnActive]}
+            onPress={handleAutoPrintToggle}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={autoPrint ? 'print' : 'print-outline'}
+              size={15}
+              color={autoPrint ? '#ffffff' : '#0f172a'}
+            />
+            <Text style={[styles.todayBtnText, autoPrint && styles.todayBtnTextActive]}>
+              Auto Print
+            </Text>
+            {autoPrint && (
+              <View style={styles.todayActiveDot} />
+            )}
+          </TouchableOpacity>
+
+          {/* Today Only toggle button (pehle jaisa) */}
+          <TouchableOpacity
+            style={[styles.todayBtn, todayOnly && styles.todayBtnActive]}
+            onPress={handleTodayToggle}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={todayOnly ? 'today' : 'today-outline'}
+              size={15}
+              color={todayOnly ? '#ffffff' : '#0f172a'}
+            />
+            <Text style={[styles.todayBtnText, todayOnly && styles.todayBtnTextActive]}>
+              Today Only
+            </Text>
+            {todayOnly && (
+              <View style={styles.todayActiveDot} />
+            )}
+          </TouchableOpacity>
+
+        </View>
       </View>
 
       {/* ── Table container ── */}
@@ -1052,6 +1141,7 @@ const styles = StyleSheet.create({
     width: 7, height: 7, borderRadius: 4,
     backgroundColor: '#22c55e', marginLeft: 2,
   },
+  autoPrintBtnActive: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
 
   tableContainer: {
     flex: 1, backgroundColor: 'white', borderRadius: 8,
