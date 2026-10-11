@@ -38,6 +38,7 @@ const SCREEN_PATHS = {
   Delivered:      '/delivered',
   Cancelled:      '/cancelled',
   'Delivery Team':'/delivery-team',
+  'WhatsApp Message': '/whatsapp-message',
   Settings:       '/settings',
 };
 const PATH_SCREENS = Object.fromEntries(
