@@ -333,6 +333,7 @@ export default function App() {
       case 'Delivered':     return <FilteredOrdersScreen statusFilter="Completed" title="Delivered Orders" clientId={clientId} />;
       case 'Cancelled':     return <FilteredOrdersScreen statusFilter="Cancelled" title="Cancelled Orders" clientId={clientId} />;
       case 'Delivery Team': return <DeliveryExecutiveScreen clientId={clientId} />;
+      case 'WhatsApp Message': return <WhatsAppOrderMessageScreen clientId={clientId} />;
       case 'Settings':      return <ClientSettingsScreen clientId={clientId} clientEmail={user?.email || ''} onNavigate={navigateToScreen} />;
       default:              return <DashboardScreen clientId={clientId} />;
     }
@@ -381,6 +382,7 @@ export default function App() {
             <ClientNavItem icon="restaurant-outline"       label="Menu"          screen="Menu" />
             <ClientNavItem icon="bar-chart-outline"        label="Reports"       screen="Reports" />
             <ClientNavItem icon="bicycle-outline"          label="Delivery Team" screen="Delivery Team" />
+            <ClientNavItem icon="logo-whatsapp"            label="WhatsApp Msg"  screen="WhatsApp Message" /> 
             <ClientNavItem icon="layers-outline"           label="All Orders"    screen="All Orders" />
             <ClientNavItem icon="checkmark-circle-outline" label="Delivered"     screen="Delivered" />
             <ClientNavItem icon="close-circle-outline"     label="Cancelled"     screen="Cancelled" />
