@@ -218,6 +218,7 @@ const domConfig = {
 const matchers = [
   { match: 'relfood',  name: 'Rail Food', type: 'railfood' },
   { match: 'railfood', name: 'Rail Food', type: 'railfood' },
+  { match: 'prateekagrawal120@gmail.com', name: 'Rail Food', type: 'railfood' },
 ];
 
 const type = 'railfood';
