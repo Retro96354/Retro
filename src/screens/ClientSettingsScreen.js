@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
-import * as wa from '../services/Whatsappapi';
+import * as wa from '../services/whatsappApi';
 
 const SOUND_OPTIONS = [
   { name: 'Classic Bell', icon: 'notifications-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
