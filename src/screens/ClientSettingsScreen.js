@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
-  ActivityIndicator, ScrollView, Platform, Dimensions, Image
+  ActivityIndicator, ScrollView, Platform, Dimensions, Image, Switch
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
@@ -19,6 +19,26 @@ const SOUND_OPTIONS = [
 // Build a QR code image URL from Google Charts API (no extra dependency needed)
 const getQRUrl = (text) =>
   `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(text)}&color=0f172a&bgcolor=ffffff&qzone=2`;
+
+// ── Auto messages: default / merge helpers ───────────────────────────────────
+const blankBlock = (extra = {}) => ({
+  enabled: false, templateName: '', language: '', variables: [],
+  allVendors: true, vendors: [], ...extra,
+});
+const defaultAuto = () => ({
+  enabled: false,
+  print: blankBlock(),
+  review: blankBlock({ allVendors: false, delayMinutes: '120', goodUrl: '', goodText: '', badText: '' }),
+});
+function mergeAuto(saved) {
+  const d = defaultAuto();
+  if (!saved) return d;
+  const print = { ...d.print, ...(saved.print || {}) };
+  const review = { ...d.review, ...(saved.review || {}) };
+  review.delayMinutes = String(review.delayMinutes || 120);
+  return { enabled: !!saved.enabled, print, review };
+}
+const DELAY_PRESETS = [30, 60, 120, 180];
 
 function useScreenWidth() {
   const [width, setWidth] = useState(Dimensions.get('window').width);
@@ -59,6 +79,14 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
   const [watchList, setWatchList] = useState(['']);
   const [savingWatch, setSavingWatch] = useState(false);
 
+  // Auto messages state
+  const [auto, setAuto] = useState(defaultAuto());
+  const [templates, setTemplates] = useState([]);       // approved + analyzed
+  const [vendorList, setVendorList] = useState([]);
+  const [autoMetaError, setAutoMetaError] = useState('');
+  const [openPicker, setOpenPicker] = useState(null);   // 'print' | 'review' | null
+  const [savingAuto, setSavingAuto] = useState(false);
+
   const screenWidth = useScreenWidth();
   const isWide = screenWidth >= 768;
 
@@ -92,6 +120,10 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
       setWaEditing(!st.connected); // connect nahi hai to form khud khul jaye
       const nums = (st.watchNumbers || []).filter(Boolean);
       setWatchList(nums.length ? nums : ['']);
+      if (st.connected) {
+        setAuto(mergeAuto(st.autoMessages));
+        loadAutoMeta();
+      }
     } catch (e) {
       setWaError(e.message);
     }
@@ -619,6 +651,368 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     </View>
   );
 
+  /* ── Auto messages: templates + vendors load ── */
+  const loadAutoMeta = async () => {
+    setAutoMetaError('');
+    try {
+      const list = await wa.getTemplates();
+      setTemplates(list.filter((t) => t.status === 'APPROVED').map(wa.analyzeTemplate));
+    } catch (e) {
+      setAutoMetaError(e.message);
+    }
+    try {
+      setVendorList(await wa.getVendors());
+    } catch (e) {}
+  };
+
+  const setBlock = (key, patch) =>
+    setAuto((p) => ({ ...p, [key]: { ...p[key], ...patch } }));
+
+  const pickTemplate = (key, t) => {
+    setBlock(key, {
+      templateName: t.name,
+      language: t.language,
+      variables: t.varNums.map(() => ''),
+    });
+    setOpenPicker(null);
+  };
+
+  const setVar = (key, i, v) =>
+    setAuto((p) => {
+      const vars = [...p[key].variables];
+      vars[i] = v;
+      return { ...p, [key]: { ...p[key], variables: vars } };
+    });
+
+  const addVarToken = (key, i, tokenKey) =>
+    setAuto((p) => {
+      const vars = [...p[key].variables];
+      const cur = (vars[i] || '').trim();
+      vars[i] = cur ? `${cur} {{${tokenKey}}}` : `{{${tokenKey}}}`;
+      return { ...p, [key]: { ...p[key], variables: vars } };
+    });
+
+  const toggleVendor = (key, name) =>
+    setAuto((p) => {
+      const cur = p[key].vendors;
+      const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+      return { ...p, [key]: { ...p[key], vendors: next } };
+    });
+
+  const validateBlock = (key, label) => {
+    const b = auto[key];
+    if (!b.enabled) return null;
+    if (!b.templateName) return `${label}: template chuniye`;
+    if (b.variables.some((v) => !String(v || '').trim())) return `${label}: har variable ke liye value chuniye`;
+    if (!b.allVendors && b.vendors.length === 0) return `${label}: kam se kam ek vendor chuniye ya "Sab vendors" on karein`;
+    return null;
+  };
+
+  const handleSaveAuto = async () => {
+    const problem = validateBlock('print', 'Print message') || validateBlock('review', 'Review message');
+    if (problem) {
+      wa.notify('Adhoori jaankari', problem);
+      return;
+    }
+    const r = auto.review;
+    if (r.enabled) {
+      const mins = parseInt(r.delayMinutes, 10);
+      if (!mins || mins < 1 || mins > 1440) {
+        wa.notify('Time galat hai', 'Review kitni der baad jayega ye 1 se 1440 minute ke beech daalein');
+        return;
+      }
+    }
+    setSavingAuto(true);
+    try {
+      const payload = {
+        enabled: auto.enabled,
+        print: {
+          enabled: auto.print.enabled,
+          templateName: auto.print.templateName,
+          language: auto.print.language,
+          variables: auto.print.variables,
+          allVendors: auto.print.allVendors,
+          vendors: auto.print.vendors,
+        },
+        review: {
+          enabled: r.enabled,
+          templateName: r.templateName,
+          language: r.language,
+          variables: r.variables,
+          allVendors: r.allVendors,
+          vendors: r.vendors,
+          delayMinutes: parseInt(r.delayMinutes, 10) || 120,
+          goodUrl: r.goodUrl,
+          goodText: r.goodText,
+          badText: r.badText,
+        },
+      };
+      const saved = await wa.saveAutoMessages(payload);
+      setAuto(mergeAuto(saved));
+      wa.notify('✓ Saved', saved.enabled
+        ? 'Auto messages chalu hain. Ab order print karte hi ye apne aap chalenge.'
+        : 'Settings save ho gayi, par abhi upar ka master switch band hai.');
+    } catch (e) {
+      wa.notify('Save nahi hua', e.message);
+    }
+    setSavingAuto(false);
+  };
+
+  /* ── Auto messages: ek block (print / review) ── */
+  const renderAutoBlock = (key, title, subtitle) => {
+    const b = auto[key];
+    const isReview = key === 'review';
+    const tpl = templates.find((t) => t.name === b.templateName && t.language === b.language) || null;
+    const varCount = tpl ? tpl.varNums.length : b.variables.length;
+    const pickerOpen = openPicker === key;
+
+    return (
+      <View style={styles.autoBlock}>
+        <View style={styles.autoHead}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <Text style={styles.autoTitle}>{title}</Text>
+            <Text style={styles.autoSub}>{subtitle}</Text>
+          </View>
+          <Switch
+            value={b.enabled}
+            onValueChange={(v) => setBlock(key, { enabled: v })}
+            trackColor={{ true: '#16a34a', false: '#e2e8f0' }}
+          />
+        </View>
+
+        {b.enabled ? (
+          <View style={{ marginTop: 14 }}>
+            {/* Template picker */}
+            <Text style={styles.fieldLabel}>Template</Text>
+            <TouchableOpacity
+              style={styles.tplSelect}
+              onPress={() => setOpenPicker(pickerOpen ? null : key)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[styles.tplSelectText, !b.templateName && { color: '#94a3b8' }]}
+                numberOfLines={1}
+              >
+                {b.templateName || 'Template chuniye'}
+              </Text>
+              <Ionicons name={pickerOpen ? 'chevron-up' : 'chevron-down'} size={16} color="#64748b" />
+            </TouchableOpacity>
+
+            {pickerOpen ? (
+              <View style={styles.tplList}>
+                {autoMetaError ? <Text style={styles.errText}>Templates load nahi hue: {autoMetaError}</Text> : null}
+                {!autoMetaError && templates.length === 0 ? (
+                  <Text style={styles.cardSubtitle}>
+                    Koi approved template nahi mila. WhatsApp Manager mein template banayein; approve hone mein kuch
+                    minute se 24 ghante lagte hain.
+                  </Text>
+                ) : null}
+                {templates.map((t) => (
+                  <TouchableOpacity
+                    key={`${t.name}|${t.language}`}
+                    style={[styles.tplItem, !t.supported && { opacity: 0.45 }]}
+                    disabled={!t.supported}
+                    onPress={() => pickTemplate(key, t)}
+                  >
+                    <View style={styles.tplItemTop}>
+                      <Text style={styles.tplItemName} numberOfLines={1}>{t.name}</Text>
+                      <Text style={styles.tplPill}>{t.category}</Text>
+                    </View>
+                    <Text style={styles.tplItemBody} numberOfLines={2}>{t.bodyText}</Text>
+                    {!t.supported ? <Text style={styles.tplWarn}>⚠ {t.reason}</Text> : null}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
+            {/* Preview + variables */}
+            {tpl ? (
+              <View style={styles.bubble}>
+                <Text style={styles.bubbleText}>{tpl.bodyText}</Text>
+              </View>
+            ) : null}
+
+            {Array.from({ length: varCount }).map((_, i) => (
+              <View key={i} style={{ marginBottom: 10 }}>
+                <Text style={styles.varLabel}>{`{{${tpl ? tpl.varNums[i] : i + 1}}} mein kya jaye`}</Text>
+                <TextInput
+                  style={[styles.fieldInput, { marginBottom: 6 }]}
+                  placeholder="Neeche se chuniye ya khud likhiye"
+                  placeholderTextColor="#c7d0dc"
+                  value={b.variables[i] || ''}
+                  onChangeText={(v) => setVar(key, i, v)}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  {wa.ORDER_TOKENS.map((t) => (
+                    <TouchableOpacity key={t.key} style={styles.tokenChip} onPress={() => addVarToken(key, i, t.key)}>
+                      <Text style={styles.tokenChipText}>+ {t.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            ))}
+
+            {/* Vendors */}
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Sab vendors ke orders par</Text>
+              <Switch
+                value={b.allVendors}
+                onValueChange={(v) => setBlock(key, { allVendors: v })}
+                trackColor={{ true: '#16a34a', false: '#e2e8f0' }}
+              />
+            </View>
+            {!b.allVendors ? (
+              <View style={{ marginBottom: 8 }}>
+                <Text style={[styles.cardSubtitle, { marginBottom: 8 }]}>
+                  Jin vendors ke orders par chalana hai unhe chuniye:
+                </Text>
+                <View style={styles.chipWrap}>
+                  {vendorList.map((v) => {
+                    const on = b.vendors.includes(v);
+                    return (
+                      <TouchableOpacity
+                        key={v}
+                        style={[styles.vChip, on && styles.vChipOn]}
+                        onPress={() => toggleVendor(key, v)}
+                      >
+                        <Text style={[styles.vChipText, on && styles.vChipTextOn]}>{on ? '✓ ' : ''}{v}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                {vendorList.length === 0 ? (
+                  <Text style={styles.errText}>Vendor list load nahi hui. Neeche "Sab vendors" on rakh sakte hain.</Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* Review extras */}
+            {isReview ? (
+              <View style={{ marginTop: 6 }}>
+                <Text style={styles.fieldLabel}>Print ke kitni der baad bhejna hai (minute)</Text>
+                <TextInput
+                  style={[styles.fieldInput, { marginBottom: 6 }]}
+                  value={b.delayMinutes}
+                  onChangeText={(v) => setBlock(key, { delayMinutes: v.replace(/[^0-9]/g, '') })}
+                  keyboardType="number-pad"
+                  placeholder="120"
+                  placeholderTextColor="#c7d0dc"
+                />
+                <View style={[styles.chipWrap, { marginBottom: 14 }]}>
+                  {DELAY_PRESETS.map((m) => {
+                    const on = String(m) === String(b.delayMinutes);
+                    return (
+                      <TouchableOpacity
+                        key={m}
+                        style={[styles.vChip, on && styles.vChipOn]}
+                        onPress={() => setBlock(key, { delayMinutes: String(m) })}
+                      >
+                        <Text style={[styles.vChipText, on && styles.vChipTextOn]}>
+                          {m >= 60 ? `${m / 60} ghante` : `${m} min`}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={styles.fieldLabel}>"Accha tha" par kholne wala link (https)</Text>
+                <TextInput
+                  style={styles.fieldInput}
+                  value={b.goodUrl}
+                  onChangeText={(v) => setBlock(key, { goodUrl: v })}
+                  placeholder="https://www.ecatering.irctc.co.in"
+                  placeholderTextColor="#c7d0dc"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+
+                <Text style={styles.fieldLabel}>"Accha tha" ke baad ka message (optional)</Text>
+                <TextInput
+                  style={[styles.fieldInput, styles.textArea]}
+                  value={b.goodText}
+                  onChangeText={(v) => setBlock(key, { goodText: v })}
+                  placeholder="Khali chhodne par default message jayega"
+                  placeholderTextColor="#c7d0dc"
+                  multiline
+                  textAlignVertical="top"
+                />
+
+                <Text style={styles.fieldLabel}>"Accha nahi tha" par apology message (optional)</Text>
+                <TextInput
+                  style={[styles.fieldInput, styles.textArea]}
+                  value={b.badText}
+                  onChangeText={(v) => setBlock(key, { badText: v })}
+                  placeholder="Khali chhodne par default apology jayegi"
+                  placeholderTextColor="#c7d0dc"
+                  multiline
+                  textAlignVertical="top"
+                />
+                <Text style={styles.autoSub}>
+                  Link aur dono jawab tab kaam aate hain jab template mein "Accha tha" / "Accha nahi tha" jaise
+                  quick-reply buttons hon.
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
+  /* ── Auto messages card ── */
+  const renderAutoCard = () => (
+    <View style={styles.card}>
+      <View style={styles.cardHeader}>
+        <View style={[styles.cardIconWrap, { backgroundColor: '#fef3c7' }]}>
+          <Ionicons name="flash-outline" size={18} color="#d97706" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>Auto WhatsApp Messages</Text>
+          <Text style={styles.cardSubtitle}>Order print hone par apne aap message</Text>
+        </View>
+        <Switch
+          value={auto.enabled}
+          onValueChange={(v) => setAuto((p) => ({ ...p, enabled: v }))}
+          trackColor={{ true: '#16a34a', false: '#e2e8f0' }}
+        />
+      </View>
+
+      <View style={styles.divider} />
+
+      <View style={styles.hintBox}>
+        <Ionicons name="information-circle-outline" size={14} color="#16a34a" style={{ marginTop: 1 }} />
+        <Text style={styles.hintText}>
+          Dashboard se order print karte hi customer ke number par message jayega. Sirf wahi orders jinme number ho
+          aur customer ne STOP na likha ho. Ek order par har message sirf ek baar jata hai, dobara print karne par
+          nahi.
+        </Text>
+      </View>
+
+      <View style={!auto.enabled ? { opacity: 0.55 } : null}>
+        {renderAutoBlock('print', '1. Print hote hi message', 'Order print karte hi turant customer ko')}
+        <View style={styles.divider} />
+        {renderAutoBlock('review', '2. Review message', 'Print ke kuch der baad apne aap')}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.btn, styles.btnGreen, { marginTop: 16 }, savingAuto && styles.btnDisabled]}
+        onPress={handleSaveAuto}
+        disabled={savingAuto}
+      >
+        {savingAuto
+          ? <ActivityIndicator size="small" color="#fff" />
+          : <>
+              <Ionicons name="save-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={styles.btnText}>Auto messages save karein</Text>
+            </>
+        }
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -683,6 +1077,14 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
 
         {/* ── Watch numbers (connected hone par) ── */}
         {waStatus?.connected && !waError ? renderWatchCard() : null}
+
+        {/* ── Auto messages (connected hone par) ── */}
+        {waStatus?.connected && !waError ? (
+          <>
+            <Text style={[styles.sectionLabel, { marginTop: 8 }]}>AUTO MESSAGES</Text>
+            {renderAutoCard()}
+          </>
+        ) : null}
 
         {/* ── Notification Sound ── */}
         <Text style={[styles.sectionLabel, { marginTop: 8 }]}>NOTIFICATIONS</Text>
@@ -894,6 +1296,61 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start', paddingVertical: 6, marginBottom: 10,
   },
   addWatchText: { fontSize: 12, fontWeight: '700', color: '#6366f1' },
+
+  // ── Auto messages ──
+  autoBlock: { paddingVertical: 4 },
+  autoHead: { flexDirection: 'row', alignItems: 'center' },
+  autoTitle: { fontSize: 13.5, fontWeight: '700', color: '#0f172a' },
+  autoSub: { fontSize: 11, color: '#94a3b8', lineHeight: 16, marginTop: 2 },
+  varLabel: { fontSize: 12, fontWeight: '700', color: '#075e54', marginBottom: 4 },
+  textArea: { minHeight: 64, marginBottom: 12 },
+
+  tplSelect: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8,
+    paddingVertical: 11, paddingHorizontal: 12, backgroundColor: '#f8fafc', marginBottom: 10,
+  },
+  tplSelectText: { fontSize: 13, color: '#0f172a', flex: 1, marginRight: 8 },
+  tplList: {
+    borderWidth: 1, borderColor: '#e2e8f0', borderRadius: 8,
+    padding: 8, marginBottom: 12, backgroundColor: '#fff',
+  },
+  tplItem: {
+    borderWidth: 1, borderColor: '#f1f5f9', borderRadius: 8,
+    padding: 10, marginBottom: 6, backgroundColor: '#f8fafc',
+  },
+  tplItemTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  tplItemName: { fontSize: 13, fontWeight: '700', color: '#0f172a', flex: 1, marginRight: 8 },
+  tplPill: {
+    fontSize: 10, color: '#15803d', backgroundColor: '#dcfce7',
+    paddingHorizontal: 7, paddingVertical: 2, borderRadius: 10, overflow: 'hidden',
+  },
+  tplItemBody: { fontSize: 12, color: '#475569', marginTop: 4, lineHeight: 17 },
+  tplWarn: { fontSize: 11, color: '#b45309', marginTop: 4 },
+
+  bubble: { backgroundColor: '#dcf8c6', borderRadius: 10, borderTopLeftRadius: 2, padding: 10, marginBottom: 12 },
+  bubbleText: { fontSize: 12.5, color: '#111', lineHeight: 18 },
+
+  tokenChip: {
+    borderWidth: 1, borderColor: '#16a34a', borderRadius: 16,
+    paddingHorizontal: 11, paddingVertical: 5, marginRight: 7, backgroundColor: '#f0fdf4',
+  },
+  tokenChipText: { fontSize: 11.5, color: '#15803d', fontWeight: '600' },
+
+  switchRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 8, marginBottom: 4,
+  },
+  switchLabel: { fontSize: 12.5, fontWeight: '600', color: '#475569', flex: 1, marginRight: 10 },
+
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap' },
+  vChip: {
+    borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc',
+    borderRadius: 18, paddingHorizontal: 13, paddingVertical: 7, marginRight: 8, marginBottom: 8,
+  },
+  vChipOn: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
+  vChipText: { fontSize: 12.5, color: '#475569' },
+  vChipTextOn: { color: '#fff', fontWeight: '700' },
 
   // ── Sound ──
   soundGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
