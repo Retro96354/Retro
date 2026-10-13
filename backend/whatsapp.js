@@ -585,6 +585,34 @@ module.exports = function registerWhatsApp(app, deps) {
   const DEFAULT_GOOD = "Shukriya! 😊 Aapko humara khana pasand aaya, humein khushi hui. Agla order dene ke liye neeche button dabayein 👇";
   const DEFAULT_BAD = "Humein khed hai ki aapka experience accha nahi raha 🙏 Aapka feedback hamari team tak pahunch gaya hai, hum ise zaroor sudharenge.";
 
+  // Menu PDF / photo ka link sach mein khulta hai ya nahi — save se pehle check.
+  // Meta bhejte waqt isi link se file uthata hai, link galat ho to message fail hota hai.
+  async function checkMediaUrl(url, format) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      let res = await fetch(url, { method: "HEAD", signal: ctrl.signal, redirect: "follow" });
+      if (!res.ok) {
+        res = await fetch(url, { method: "GET", headers: { Range: "bytes=0-0" }, signal: ctrl.signal, redirect: "follow" });
+      }
+      if (!res.ok && res.status !== 206) return `Link khul nahi raha (HTTP ${res.status}). Link public hona chahiye.`;
+      const type = String(res.headers.get("content-type") || "").toLowerCase();
+      const size = parseInt(res.headers.get("content-length") || "0", 10);
+      if (format === "DOCUMENT") {
+        if (!type.includes("pdf")) return `Is link se PDF nahi mil rahi (file type: ${type || "pata nahi"}). Seedha PDF file ka link daalein.`;
+        if (size > 100 * 1024 * 1024) return "PDF 100 MB se badi hai";
+      } else {
+        if (!/^image\/(jpeg|png)/.test(type)) return `Is link se JPG/PNG photo nahi mil rahi (file type: ${type || "pata nahi"}).`;
+        if (size > 5 * 1024 * 1024) return "Photo 5 MB se badi hai";
+      }
+      return "";
+    } catch (e) {
+      return `Link check nahi ho paya: ${e.name === "AbortError" ? "time out" : e.message}`;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // Template ko Meta se check karo: approved hai? hamare liye supported hai?
   async function inspectTemplate(cfg, name, language) {
     const r = await meta(
@@ -598,8 +626,16 @@ module.exports = function registerWhatsApp(app, deps) {
     const body = comps.find((c) => c.type === "BODY");
     const header = comps.find((c) => c.type === "HEADER");
     const buttons = comps.find((c) => c.type === "BUTTONS");
-    if (header && header.format !== "TEXT") return { error: "Image/video/document header wale templates support nahi hain" };
-    if (header && /\{\{/.test(header.text || "")) return { error: "Header mein variable wale templates support nahi hain" };
+    let headerFormat = "";
+    if (header) {
+      if (header.format === "TEXT") {
+        if (/\{\{/.test(header.text || "")) return { error: "Header mein variable wale templates support nahi hain" };
+      } else if (["DOCUMENT", "IMAGE"].includes(header.format)) {
+        headerFormat = header.format; // PDF / photo — bhejte waqt link dena padega
+      } else {
+        return { error: `${header.format} header wale templates support nahi hain (sirf PDF ya photo)` };
+      }
+    }
     const btns = (buttons && buttons.buttons) || [];
     for (const b of btns) {
       if (b.type === "URL" && /\{\{/.test(b.url || "")) return { error: "Dynamic link button wale templates support nahi hain" };
@@ -608,7 +644,7 @@ module.exports = function registerWhatsApp(app, deps) {
     const quickReplies = btns.filter((b) => b.type === "QUICK_REPLY").length;
     if (quickReplies > 2) return { error: "Max 2 quick-reply buttons support hote hain" };
     const nums = [...(((body && body.text) || "").matchAll(/\{\{(\d+)\}\}/g))].map((m) => parseInt(m[1], 10));
-    return { language: t.language, category: t.category, quickReplies, varCount: new Set(nums).size };
+    return { language: t.language, category: t.category, quickReplies, varCount: new Set(nums).size, headerFormat };
   }
 
   function vendorAllowed(block, order) {
@@ -630,6 +666,9 @@ module.exports = function registerWhatsApp(app, deps) {
       allVendors: !!b.allVendors,
       vendors,
       quickReplies: 0,
+      headerFormat: "",
+      headerUrl: String(b.headerUrl || "").trim(),
+      headerFilename: String(b.headerFilename || "").trim().replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80),
     };
     if (kind === "review") {
       out.delayMinutes = Math.min(1440, Math.max(1, parseInt(b.delayMinutes, 10) || 120));
@@ -656,6 +695,18 @@ module.exports = function registerWhatsApp(app, deps) {
     if (info.error) return { error: info.error };
     out.language = info.language;
     out.quickReplies = info.quickReplies;
+    out.headerFormat = info.headerFormat || "";
+    if (out.headerFormat) {
+      const what = out.headerFormat === "DOCUMENT" ? "PDF" : "photo";
+      if (!/^https:\/\//.test(out.headerUrl)) return { error: `Template mein ${what} header hai — ${what} ka https link daalein` };
+      const bad = await checkMediaUrl(out.headerUrl, out.headerFormat);
+      if (bad) return { error: bad };
+      if (out.headerFormat === "DOCUMENT" && !out.headerFilename) out.headerFilename = "Menu.pdf";
+      if (out.headerFormat === "DOCUMENT" && !/\.pdf$/i.test(out.headerFilename)) out.headerFilename += ".pdf";
+    } else {
+      out.headerUrl = "";
+      out.headerFilename = "";
+    }
     if (out.variables.length !== info.varCount)
       return { error: `Template mein ${info.varCount} variable hain, aapne ${out.variables.length} bhare` };
     if (out.variables.some((v) => !String(v).trim())) return { error: "Har variable ke liye value chuniye" };
@@ -707,6 +758,16 @@ module.exports = function registerWhatsApp(app, deps) {
   // Template bhejo. mode "review" mein quick-reply buttons feedback payload ke saath jaate hain.
   async function sendAutoTemplate(cfg, tpl, order, phone, mode) {
     const components = [];
+    if (tpl.headerFormat && tpl.headerUrl) {
+      components.push({
+        type: "header",
+        parameters: [
+          tpl.headerFormat === "DOCUMENT"
+            ? { type: "document", document: { link: tpl.headerUrl, filename: tpl.headerFilename || "Menu.pdf" } }
+            : { type: "image", image: { link: tpl.headerUrl } },
+        ],
+      });
+    }
     if ((tpl.variables || []).length) {
       components.push({
         type: "body",
