@@ -30,6 +30,14 @@ module.exports = function registerWhatsApp(app, deps) {
   const MAX_RECIPIENTS = 5000;
   const SEND_GAP_MS = 150; // ~6-7 msg/sec per campaign, Meta limits se safe
 
+  // Vendor naam (IRCTC, Zoop, RailFood ...) — backend ki vendor-rules se
+  let VENDOR_NAMES = [];
+  try {
+    VENDOR_NAMES = [...new Set(require("./vendor-rules").VENDOR_MAP.map((v) => v.name).filter(Boolean))].sort();
+  } catch (_) {
+    VENDOR_NAMES = [];
+  }
+
   // ── helpers ──────────────────────────────────────────────────────────────
   // Order ke contactNo kai formats mein aa sakte hain ("+91 98765-43210",
   // "9876543210, 9123456789" ...) — hamesha ek valid number "91XXXXXXXXXX" banao
@@ -167,8 +175,8 @@ module.exports = function registerWhatsApp(app, deps) {
         verifiedName: wa.verifiedName || "",
         webhookSubscribed: !!wa.webhookSubscribed,
         watchNumbers: wa.watchNumbers || [],
-        feedback: wa.feedback || null,
         orderMessage: wa.orderMessage || null,
+        autoMessages: wa.autoMessages || null,
       });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -569,116 +577,323 @@ module.exports = function registerWhatsApp(app, deps) {
     log(`[WA ${clientId}] order messages ${campaignId} done — sent ${sent}, failed ${failed}`);
   }
 
-  // ── 6. FEEDBACK FLOW (order ke baad customer se feedback) ────────────────
-  // Flow: order delivery time + delayMinutes -> template (2 quick-reply buttons)
-  //   "Accha tha"      -> IRCTC link wala message
-  //   "Accha nahi tha" -> apology message (auto)
-  const IST = "Asia/Kolkata";
-  function istParts() {
-    const p = new Intl.DateTimeFormat("en-CA", {
-      timeZone: IST, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", hour12: false,
-    }).formatToParts(new Date());
-    const g = (t) => p.find((x) => x.type === t).value;
-    let hh = parseInt(g("hour"), 10);
-    if (hh === 24) hh = 0;
-    return { date: `${g("year")}-${g("month")}-${g("day")}`, minutes: hh * 60 + parseInt(g("minute"), 10) };
-  }
-
+  // ── 6. AUTO MESSAGES ─────────────────────────────────────────────────────
+  // (a) Template 1: dashboard se order PRINT hote hi customer ko turant message
+  // (b) Template 2: print ke X minute (default 120) baad review message
+  // Dono ke liye vendor chun sakte hain (sab ya kuch). Timer order ke document
+  // mein save hota hai (waReview.dueAt), isliye server restart par bhi nahi chhootta.
   const DEFAULT_GOOD = "Shukriya! 😊 Aapko humara khana pasand aaya, humein khushi hui. Agla order dene ke liye neeche button dabayein 👇";
   const DEFAULT_BAD = "Humein khed hai ki aapka experience accha nahi raha 🙏 Aapka feedback hamari team tak pahunch gaya hai, hum ise zaroor sudharenge.";
 
-  // body: { enabled, templateName, language:"en", goodUrl:"https://...", delayMinutes:30, goodText, badText }
-  app.put("/api/whatsapp/clients/:clientId/feedback-settings", rateLimit(20), requireClientOrAdmin, async (req, res) => {
+  // Template ko Meta se check karo: approved hai? hamare liye supported hai?
+  async function inspectTemplate(cfg, name, language) {
+    const r = await meta(
+      `/${cfg.wabaId}/message_templates?name=${encodeURIComponent(name)}&limit=50&fields=name,language,status,category,components`,
+      cfg.token,
+    );
+    const t = (r.data || []).find((x) => x.name === name && (!language || x.language === language));
+    if (!t) return { error: `Template "${name}" nahi mila` };
+    if (t.status !== "APPROVED") return { error: `Template "${name}" abhi approve nahi hua (status: ${t.status})` };
+    const comps = t.components || [];
+    const body = comps.find((c) => c.type === "BODY");
+    const header = comps.find((c) => c.type === "HEADER");
+    const buttons = comps.find((c) => c.type === "BUTTONS");
+    if (header && header.format !== "TEXT") return { error: "Image/video/document header wale templates support nahi hain" };
+    if (header && /\{\{/.test(header.text || "")) return { error: "Header mein variable wale templates support nahi hain" };
+    const btns = (buttons && buttons.buttons) || [];
+    for (const b of btns) {
+      if (b.type === "URL" && /\{\{/.test(b.url || "")) return { error: "Dynamic link button wale templates support nahi hain" };
+      if (!["QUICK_REPLY", "URL", "PHONE_NUMBER"].includes(b.type)) return { error: `"${b.type}" button wale templates support nahi hain` };
+    }
+    const quickReplies = btns.filter((b) => b.type === "QUICK_REPLY").length;
+    if (quickReplies > 2) return { error: "Max 2 quick-reply buttons support hote hain" };
+    const nums = [...(((body && body.text) || "").matchAll(/\{\{(\d+)\}\}/g))].map((m) => parseInt(m[1], 10));
+    return { language: t.language, category: t.category, quickReplies, varCount: new Set(nums).size };
+  }
+
+  function vendorAllowed(block, order) {
+    if (!block) return false;
+    if (block.allVendors) return true;
+    const v = String(order.vendorName || "").trim().toLowerCase();
+    return (block.vendors || []).some((x) => String(x).trim().toLowerCase() === v);
+  }
+
+  // Ek block (print ya review) ko validate karke saaf form mein banao
+  async function buildBlock(raw, kind, cfg) {
+    const b = raw || {};
+    const vendors = [...new Set((Array.isArray(b.vendors) ? b.vendors : []).map((x) => String(x).trim()).filter(Boolean))].slice(0, 60);
+    const out = {
+      enabled: !!b.enabled,
+      templateName: String(b.templateName || "").trim(),
+      language: String(b.language || "").trim(),
+      variables: (Array.isArray(b.variables) ? b.variables : []).map((x) => String(x)).slice(0, 10),
+      allVendors: !!b.allVendors,
+      vendors,
+      quickReplies: 0,
+    };
+    if (kind === "review") {
+      out.delayMinutes = Math.min(1440, Math.max(1, parseInt(b.delayMinutes, 10) || 120));
+      out.goodUrl = String(b.goodUrl || "").trim();
+      out.goodText = String(b.goodText || "").trim().slice(0, 500);
+      out.badText = String(b.badText || "").trim().slice(0, 500);
+    }
+    if (!out.enabled) return { block: out }; // band hai — check ki zaroorat nahi
+
+    if (!out.templateName) return { error: "Template chuniye" };
+    if (!out.allVendors && out.vendors.length === 0)
+      return { error: 'Kam se kam ek vendor chuniye ya "Sab vendors" on karein' };
+    for (const v of out.variables) {
+      for (const m of String(v).matchAll(/\{\{(\w+)\}\}/g)) {
+        if (!TOKENS[m[1]]) return { error: `Unknown field {{${m[1]}}}` };
+      }
+    }
+    let info;
     try {
-      const { enabled = true, templateName, language = "en", goodUrl, delayMinutes = 30, goodText, badText } = req.body;
-      if (!templateName) return res.status(400).json({ error: "templateName required" });
-      if (!/^https:\/\//.test(goodUrl || "")) return res.status(400).json({ error: "goodUrl must be https link" });
-      await updateDoc(doc(db, "clients", req.params.clientId), {
-        "whatsapp.feedback": {
-          enabled: !!enabled, templateName, language, goodUrl,
-          delayMinutes: Math.max(0, parseInt(delayMinutes, 10) || 30),
-          goodText: goodText || DEFAULT_GOOD,
-          badText: badText || DEFAULT_BAD,
-        },
-      });
-      res.json({ success: true });
+      info = await inspectTemplate(cfg, out.templateName, out.language);
     } catch (e) {
+      return { error: `Meta se template check nahi hua: ${e.message}` };
+    }
+    if (info.error) return { error: info.error };
+    out.language = info.language;
+    out.quickReplies = info.quickReplies;
+    if (out.variables.length !== info.varCount)
+      return { error: `Template mein ${info.varCount} variable hain, aapne ${out.variables.length} bhare` };
+    if (out.variables.some((v) => !String(v).trim())) return { error: "Har variable ke liye value chuniye" };
+    if (kind === "review") {
+      if (out.goodUrl && !/^https:\/\//.test(out.goodUrl)) return { error: "Link https:// se shuru hona chahiye" };
+      if (info.quickReplies > 0 && !out.goodUrl)
+        return { error: '"Accha tha" button dabane par kholne wala link (https) daalein' };
+    }
+    return { block: out };
+  }
+
+  // Settings page se save: { enabled, print:{...}, review:{...} }
+  app.put("/api/whatsapp/clients/:clientId/auto-messages", rateLimit(20), requireClientOrAdmin, async (req, res) => {
+    try {
+      const cfg = await getWaConfig(req.params.clientId);
+      if (!cfg) return res.status(400).json({ error: "Pehle WhatsApp connect karein" });
+      const pb = await buildBlock(req.body.print, "print", cfg);
+      if (pb.error) return res.status(400).json({ error: `Print message: ${pb.error}` });
+      const rb = await buildBlock(req.body.review, "review", cfg);
+      if (rb.error) return res.status(400).json({ error: `Review message: ${rb.error}` });
+      const settings = {
+        enabled: !!req.body.enabled,
+        print: pb.block,
+        review: rb.block,
+        updatedAt: new Date().toISOString(),
+      };
+      await updateDoc(doc(db, "clients", req.params.clientId), { "whatsapp.autoMessages": settings });
+      res.json(settings);
+    } catch (e) {
+      warn(`WA auto-messages save error: ${e.message}`);
       res.status(500).json({ error: e.message });
     }
   });
 
-  // Template: BODY params = {{1}} customer naam, {{2}} restaurant naam, {{3}} order no
-  // + 2 quick-reply buttons (index 0 = accha, index 1 = accha nahi)
-  async function sendFeedbackTemplate(cfg, fb, businessName, order, phone) {
-    return meta(`/${cfg.phoneNumberId}/messages`, cfg.token, "POST", {
+  // Vendor chips ke liye
+  app.get("/api/whatsapp/clients/:clientId/vendors", rateLimit(30), requireClientOrAdmin, (_req, res) => {
+    res.json(VENDOR_NAMES);
+  });
+
+  async function isOptedOut(clientId, phone) {
+    try {
+      const c = await getDoc(doc(db, "wa_customers", `${clientId}_${phone}`));
+      return c.exists() && c.data().optIn === false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Template bhejo. mode "review" mein quick-reply buttons feedback payload ke saath jaate hain.
+  async function sendAutoTemplate(cfg, tpl, order, phone, mode) {
+    const components = [];
+    if ((tpl.variables || []).length) {
+      components.push({
+        type: "body",
+        parameters: tpl.variables.map((v) => ({ type: "text", text: fillTokens(v, order) })),
+      });
+    }
+    for (let i = 0; i < (tpl.quickReplies || 0); i++) {
+      components.push({
+        type: "button",
+        sub_type: "quick_reply",
+        index: String(i),
+        parameters: [{
+          type: "payload",
+          payload: mode === "review" ? `${i === 0 ? "FB_GOOD" : "FB_BAD"}:${order.orderNo}` : `QR${i}:${order.orderNo}`,
+        }],
+      });
+    }
+    const r = await meta(`/${cfg.phoneNumberId}/messages`, cfg.token, "POST", {
       messaging_product: "whatsapp",
       to: phone,
       type: "template",
       template: {
-        name: fb.templateName,
-        language: { code: fb.language || "en" },
-        components: [
-          { type: "body", parameters: [
-            { type: "text", text: order.customerName || "Customer" },
-            { type: "text", text: businessName || "Restaurant" },
-            { type: "text", text: String(order.orderNo) },
-          ] },
-          { type: "button", sub_type: "quick_reply", index: "0",
-            parameters: [{ type: "payload", payload: `FB_GOOD:${order.orderNo}` }] },
-          { type: "button", sub_type: "quick_reply", index: "1",
-            parameters: [{ type: "payload", payload: `FB_BAD:${order.orderNo}` }] },
-        ],
+        name: tpl.templateName,
+        language: { code: tpl.language || "en" },
+        ...(components.length ? { components } : {}),
       },
     });
+    const wamid = (r.messages && r.messages[0] && r.messages[0].id) || "";
+    if (wamid) {
+      await setDoc(doc(db, "wa_outbound", wamid), {
+        clientId: order.clientId, orderNo: order.orderNo, phone, kind: mode,
+        status: "sent", at: new Date().toISOString(),
+      }).catch(() => {});
+    }
+    return wamid;
   }
 
-  let _sweeping = false;
-  async function feedbackSweep() {
-    if (_sweeping) return;
-    _sweeping = true;
+  // ── Order PRINT hua -> Template 1 turant + review ka timer ──────────────────
+  const _printLocks = new Set();
+  async function processPrinted(clientId, orderNo) {
+    const lockKey = `${clientId}_${orderNo}`;
+    if (_printLocks.has(lockKey)) return { skipped: "in_progress" }; // double-click se bachav
+    _printLocks.add(lockKey);
     try {
-      const { date, minutes } = istParts();
+      const clientSnap = await getDoc(doc(db, "clients", clientId));
+      const wa = (clientSnap.exists() && clientSnap.data().whatsapp) || {};
+      const am = wa.autoMessages;
+      if (!wa.enabled || !am || !am.enabled) return { skipped: "auto_messages_off" };
+      const cfg = await getWaConfig(clientId);
+      if (!cfg) return { skipped: "not_connected" };
+
+      const ref = doc(db, "orders", `${clientId}_${orderNo}`);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return { skipped: "order_not_found" };
+      const o = snap.data();
+      const now = new Date();
+      const updates = {};
+      const result = { print: "off", review: "off" };
+      if (!o.printedAt) updates.printedAt = now.toISOString();
+
+      const phone = normPhone(o.contactNo);
+      const optedOut = phone ? await isOptedOut(clientId, phone) : false;
+
+      // Template 1 — turant
+      const p = am.print;
+      if (p && p.enabled && p.templateName) {
+        if (!vendorAllowed(p, o)) result.print = "vendor_off";
+        else if (o.waPrint && o.waPrint.sentAt) result.print = "already_sent";
+        else if (!phone) result.print = "no_phone";
+        else if (optedOut) result.print = "opted_out";
+        else {
+          try {
+            const wamid = await sendAutoTemplate(cfg, p, o, phone, "print");
+            updates.waPrint = { templateName: p.templateName, sentAt: now.toISOString(), wamid };
+            updates.waPrintError = "";
+            result.print = "sent";
+          } catch (e) {
+            warn(`[WA ${clientId}] print message failed #${orderNo}: ${e.message}`);
+            updates.waPrintError = e.message;
+            result.print = "failed";
+            result.error = e.message;
+          }
+        }
+      }
+
+      // Template 2 — review ka timer
+      const r = am.review;
+      if (r && r.enabled && r.templateName && vendorAllowed(r, o)) {
+        if (o.waReview) result.review = o.waReview.status || "scheduled"; // pehle se laga hai
+        else if (!phone) result.review = "no_phone";
+        else if (optedOut) result.review = "opted_out";
+        else {
+          const delayMin = r.delayMinutes || 120;
+          updates.waReview = {
+            status: "scheduled",
+            scheduledAt: now.toISOString(),
+            dueAt: new Date(now.getTime() + delayMin * 60000).toISOString(),
+            attempts: 0,
+          };
+          result.review = "scheduled";
+        }
+      } else if (r && r.enabled) {
+        result.review = "vendor_off";
+      }
+
+      if (Object.keys(updates).length) await updateDoc(ref, updates);
+      return result;
+    } finally {
+      _printLocks.delete(lockKey);
+    }
+  }
+
+  // Print wali screen is endpoint ko call karti hai (print dabane ke baad)
+  app.post("/api/whatsapp/clients/:clientId/orders/:orderNo/printed", rateLimit(120), requireClientOrAdmin, async (req, res) => {
+    try {
+      const orderNo = String(req.params.orderNo || "");
+      if (!orderNo || orderNo.includes("/")) return res.status(400).json({ error: "Invalid orderNo" });
+      res.json(await processPrinted(req.params.clientId, orderNo));
+    } catch (e) {
+      warn(`WA printed error: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Review sweep: har 1 minute mein due orders ko review bhejo ──────────────
+  const MAX_REVIEW_ATTEMPTS = 3;
+  const REVIEW_EXPIRE_MS = 12 * 3600 * 1000; // 12 ghante se zyada late ho to ab nahi bhejte
+  let _reviewSweeping = false;
+  async function reviewSweep() {
+    if (_reviewSweeping) return;
+    _reviewSweeping = true;
+    try {
       const clients = await getDocs(query(collection(db, "clients"), where("active", "==", true)));
       for (const c of clients.docs) {
-        const fb = c.data().whatsapp?.feedback;
-        if (!c.data().whatsapp?.enabled || !fb?.enabled || !fb.templateName) continue;
+        const wa = c.data().whatsapp || {};
+        const r = wa.autoMessages && wa.autoMessages.review;
+        if (!wa.enabled || !wa.autoMessages || !wa.autoMessages.enabled || !r || !r.enabled || !r.templateName) continue;
         const cfg = await getWaConfig(c.id);
         if (!cfg) continue;
         const snap = await getDocs(query(
           collection(db, "orders"),
           where("clientId", "==", c.id),
-          where("deliveryDate", "==", date),
+          where("waReview.status", "==", "scheduled"),
         ));
+        const nowMs = Date.now();
         for (const d of snap.docs) {
           const o = d.data();
-          if (o.feedbackSentAt || !o.contactNo || /cancel/i.test(o.status || "")) continue;
-          if (!/^\d{2}:\d{2}$/.test(o.deliveryTime || "")) continue;
-          const [h, m] = o.deliveryTime.split(":").map(Number);
-          const due = h * 60 + m + (fb.delayMinutes || 30);
-          if (minutes < due || minutes > due + 360) continue; // 6 ghante se purana nahi
+          const due = new Date(o.waReview.dueAt).getTime();
+          if (!due || due > nowMs) continue;
+          if (nowMs - due > REVIEW_EXPIRE_MS) {
+            await updateDoc(d.ref, { "waReview.status": "expired" }).catch(() => {});
+            continue;
+          }
           const phone = normPhone(o.contactNo);
-          if (!phone) continue;
-          // Pehle mark karo — dobara bhejne (duplicate) se bachne ke liye
-          await updateDoc(d.ref, { feedbackSentAt: new Date().toISOString() });
+          if (/cancel/i.test(o.status || "") || !phone || (await isOptedOut(c.id, phone))) {
+            await updateDoc(d.ref, { "waReview.status": "skipped" }).catch(() => {});
+            continue;
+          }
           try {
-            await sendFeedbackTemplate(cfg, fb, c.data().businessName, o, phone);
-            log(`[WA ${c.id}] feedback request sent for #${o.orderNo}`);
+            const wamid = await sendAutoTemplate(cfg, r, o, phone, "review");
+            await updateDoc(d.ref, {
+              "waReview.status": "sent",
+              "waReview.sentAt": new Date().toISOString(),
+              "waReview.wamid": wamid,
+            });
+            log(`[WA ${c.id}] review sent for #${o.orderNo}`);
           } catch (e) {
-            warn(`[WA ${c.id}] feedback send failed #${o.orderNo}: ${e.message}`);
-            await updateDoc(d.ref, { feedbackError: e.message }).catch(() => {});
+            const attempts = (o.waReview.attempts || 0) + 1;
+            warn(`[WA ${c.id}] review send failed #${o.orderNo} (try ${attempts}): ${e.message}`);
+            await updateDoc(d.ref, {
+              "waReview.attempts": attempts,
+              "waReview.error": e.message,
+              "waReview.status": attempts >= MAX_REVIEW_ATTEMPTS ? "failed" : "scheduled",
+              "waReview.dueAt": new Date(Date.now() + 5 * 60000).toISOString(), // 5 min baad dobara
+            }).catch(() => {});
           }
           await delay(SEND_GAP_MS);
         }
       }
     } catch (e) {
-      warn(`feedbackSweep error: ${e.message}`);
+      warn(`reviewSweep error: ${e.message}`);
     } finally {
-      _sweeping = false;
+      _reviewSweeping = false;
     }
   }
 
-  // Customer ne button dabaya -> auto reply (24 ghante ki free window khul jaati hai)
+  // Customer ne review message ka button dabaya -> auto reply
   async function handleFeedback(clientId, from, payload) {
     const [tag, ...rest] = payload.split(":");
     const orderNo = rest.join(":");
@@ -691,30 +906,31 @@ module.exports = function registerWhatsApp(app, deps) {
     });
     const cfg = await getWaConfig(clientId);
     const clientSnap = await getDoc(doc(db, "clients", clientId));
-    const fb = clientSnap.data()?.whatsapp?.feedback || {};
+    const r = (clientSnap.data() && clientSnap.data().whatsapp && clientSnap.data().whatsapp.autoMessages &&
+      clientSnap.data().whatsapp.autoMessages.review) || {};
     if (!cfg) return;
     const url = `/${cfg.phoneNumberId}/messages`;
-    if (good && fb.goodUrl) {
+    if (good && r.goodUrl) {
       try {
         await meta(url, cfg.token, "POST", {
           messaging_product: "whatsapp", to: from, type: "interactive",
           interactive: {
             type: "cta_url",
-            body: { text: fb.goodText || DEFAULT_GOOD },
-            action: { name: "cta_url", parameters: { display_text: "IRCTC kholein", url: fb.goodUrl } },
+            body: { text: r.goodText || DEFAULT_GOOD },
+            action: { name: "cta_url", parameters: { display_text: "IRCTC kholein", url: r.goodUrl } },
           },
         });
       } catch (_) {
         // cta_url na chale to plain text + link
         await meta(url, cfg.token, "POST", {
           messaging_product: "whatsapp", to: from, type: "text",
-          text: { body: `${fb.goodText || DEFAULT_GOOD}\n${fb.goodUrl}`, preview_url: true },
+          text: { body: `${r.goodText || DEFAULT_GOOD}\n${r.goodUrl}`, preview_url: true },
         });
       }
     } else {
       await meta(url, cfg.token, "POST", {
         messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: fb.badText || DEFAULT_BAD },
+        text: { body: good ? (r.goodText || DEFAULT_GOOD) : (r.badText || DEFAULT_BAD) },
       });
     }
     log(`[WA ${clientId}] feedback ${good ? "GOOD" : "BAD"} for #${orderNo}`);
@@ -835,6 +1051,6 @@ module.exports = function registerWhatsApp(app, deps) {
     }
   });
 
-  setInterval(feedbackSweep, 5 * 60 * 1000); // har 5 min mein due orders check
-  log("WhatsApp module registered (feedback sweep active)");
+  setInterval(reviewSweep, 60 * 1000); // har 1 minute mein due review messages
+  log("WhatsApp module registered (auto messages active)");
 };
