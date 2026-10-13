@@ -12,7 +12,7 @@ import { Alert, Platform } from "react-native";
 import { auth } from "../firebaseConfig";
 
 export const BACKEND_URL = (
-  process.env.EXPO_PUBLIC_BACKEND_URL || "https://migme.onrender.com"
+  process.env.EXPO_PUBLIC_BACKEND_URL 
 ).replace(/\/$/, "");
 
 const TIMEOUT_MS = 30000;
@@ -63,8 +63,6 @@ export const connectWhatsApp = ({ phoneNumberId, wabaId, accessToken, watchNumbe
 export const disconnectWhatsApp = () => request("/config", { method: "DELETE" });
 export const saveWatchNumbers = (watchNumbers) =>
   request("/watch-numbers", { method: "PUT", body: { watchNumbers } });
-export const saveFeedbackSettings = (settings) =>
-  request("/feedback-settings", { method: "PUT", body: settings });
 
 // ── Templates ───────────────────────────────────────────────────────────────
 export const getTemplates = () => request("/templates");
@@ -80,6 +78,36 @@ export const deleteCustomer = (phone) =>
 export const getCampaigns = () => request("/campaigns");
 export const startCampaign = ({ templateName, language, variables, tag }) =>
   request("/campaigns", { method: "POST", body: { templateName, language, variables, tag } });
+
+// ── Auto messages (print hote hi + review baad mein) ────────────────────────
+export const getVendors = () => request("/vendors");
+export const saveAutoMessages = (settings) =>
+  request("/auto-messages", { method: "PUT", body: settings });
+
+// Print wali screen se call karein — order print hone ke BAAD.
+// Ye kabhi error throw nahi karta, taaki WhatsApp ki wajah se print kabhi na ruke.
+// Return: { print: "sent"|"already_sent"|"no_phone"|"opted_out"|"vendor_off"|"failed"|"off",
+//           review: "scheduled"|"vendor_off"|"no_phone"|... } ya null (error/off)
+export async function notifyOrderPrinted(orderNo) {
+  try {
+    if (!orderNo) return null;
+    return await request(`/orders/${encodeURIComponent(String(orderNo))}/printed`, { method: "POST" });
+  } catch (e) {
+    console.warn("WhatsApp print notify failed:", e.message);
+    return null;
+  }
+}
+
+// Order ki kaun si jaankari message template mein lag sakti hai
+export const ORDER_TOKENS = [
+  { key: "name", label: "Customer naam" },
+  { key: "orderNo", label: "Order no" },
+  { key: "trainInfo", label: "Train" },
+  { key: "coach", label: "Coach/Seat" },
+  { key: "deliveryTime", label: "Time" },
+  { key: "vendor", label: "Vendor" },
+  { key: "total", label: "Total ₹" },
+];
 
 // ── Inbox (watch numbers ke messages) ───────────────────────────────────────
 export const getMessages = () => request("/messages");
