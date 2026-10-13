@@ -23,7 +23,7 @@ const getQRUrl = (text) =>
 // ── Auto messages: default / merge helpers ───────────────────────────────────
 const blankBlock = (extra = {}) => ({
   enabled: false, templateName: '', language: '', variables: [],
-  allVendors: true, vendors: [], ...extra,
+  allVendors: true, vendors: [], headerUrl: '', headerFilename: '', ...extra,
 });
 const defaultAuto = () => ({
   enabled: false,
@@ -656,7 +656,7 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     setAutoMetaError('');
     try {
       const list = await wa.getTemplates();
-      setTemplates(list.filter((t) => t.status === 'APPROVED').map(wa.analyzeTemplate));
+      setTemplates(list.filter((t) => t.status === 'APPROVED').map((t) => wa.analyzeTemplate(t, { allowMediaHeader: true })));
     } catch (e) {
       setAutoMetaError(e.message);
     }
@@ -704,6 +704,11 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     if (!b.enabled) return null;
     if (!b.templateName) return `${label}: template chuniye`;
     if (b.variables.some((v) => !String(v || '').trim())) return `${label}: har variable ke liye value chuniye`;
+    const tplInfo = templates.find((t) => t.name === b.templateName && t.language === b.language);
+    if (tplInfo && tplInfo.headerFormat) {
+      const what = tplInfo.headerFormat === 'DOCUMENT' ? 'PDF' : 'photo';
+      if (!/^https:\/\//.test((b.headerUrl || '').trim())) return `${label}: ${what} ka https link daalein`;
+    }
     if (!b.allVendors && b.vendors.length === 0) return `${label}: kam se kam ek vendor chuniye ya "Sab vendors" on karein`;
     return null;
   };
@@ -733,6 +738,8 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
           variables: auto.print.variables,
           allVendors: auto.print.allVendors,
           vendors: auto.print.vendors,
+          headerUrl: auto.print.headerUrl,
+          headerFilename: auto.print.headerFilename,
         },
         review: {
           enabled: r.enabled,
@@ -741,6 +748,8 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
           variables: r.variables,
           allVendors: r.allVendors,
           vendors: r.vendors,
+          headerUrl: r.headerUrl,
+          headerFilename: r.headerFilename,
           delayMinutes: parseInt(r.delayMinutes, 10) || 120,
           goodUrl: r.goodUrl,
           goodText: r.goodText,
@@ -829,6 +838,42 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
             {tpl ? (
               <View style={styles.bubble}>
                 <Text style={styles.bubbleText}>{tpl.bodyText}</Text>
+              </View>
+            ) : null}
+
+            {/* PDF / photo header wale template ke liye file ka link */}
+            {tpl && tpl.headerFormat ? (
+              <View style={styles.mediaBox}>
+                <Text style={styles.fieldLabel}>
+                  {tpl.headerFormat === 'DOCUMENT' ? 'Menu PDF ka link (https)' : 'Photo ka link (https)'}
+                </Text>
+                <TextInput
+                  style={[styles.fieldInput, { marginBottom: 6 }]}
+                  value={b.headerUrl}
+                  onChangeText={(v) => setBlock(key, { headerUrl: v })}
+                  placeholder={tpl.headerFormat === 'DOCUMENT' ? 'https://.../menu.pdf' : 'https://.../menu.jpg'}
+                  placeholderTextColor="#c7d0dc"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+                {tpl.headerFormat === 'DOCUMENT' ? (
+                  <>
+                    <Text style={styles.fieldLabel}>Customer ko file ka naam kya dikhe</Text>
+                    <TextInput
+                      style={[styles.fieldInput, { marginBottom: 6 }]}
+                      value={b.headerFilename}
+                      onChangeText={(v) => setBlock(key, { headerFilename: v })}
+                      placeholder="Retro Menu"
+                      placeholderTextColor="#c7d0dc"
+                    />
+                  </>
+                ) : null}
+                <Text style={styles.autoSub}>
+                  Link public hona chahiye (login ke bina khule). Save karte waqt hum check karte hain ki link se{' '}
+                  {tpl.headerFormat === 'DOCUMENT' ? 'PDF' : 'photo'} sach mein mil rahi hai ya nahi. Menu badalna ho
+                  to naya link yahan daal kar dobara save karein.
+                </Text>
               </View>
             ) : null}
 
@@ -1304,6 +1349,10 @@ const styles = StyleSheet.create({
   autoSub: { fontSize: 11, color: '#94a3b8', lineHeight: 16, marginTop: 2 },
   varLabel: { fontSize: 12, fontWeight: '700', color: '#075e54', marginBottom: 4 },
   textArea: { minHeight: 64, marginBottom: 12 },
+  mediaBox: {
+    backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a',
+    borderRadius: 8, padding: 12, marginBottom: 12,
+  },
 
   tplSelect: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
