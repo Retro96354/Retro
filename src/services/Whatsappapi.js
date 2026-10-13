@@ -146,7 +146,8 @@ export const sendOrderMessages = ({ orderNos, force, vendor, date }) =>
   request("/order-messages", { method: "POST", body: { orderNos, force, vendor, date } });
 
 // Meta template ko samajhna: body text, variables, aur kya support hai
-export function analyzeTemplate(t) {
+// allowMediaHeader: true -> PDF/photo header wale templates bhi "supported" (auto messages ke liye)
+export function analyzeTemplate(t, { allowMediaHeader = false } = {}) {
   const comps = t.components || [];
   const body = comps.find((c) => c.type === "BODY");
   const header = comps.find((c) => c.type === "HEADER");
@@ -157,9 +158,13 @@ export function analyzeTemplate(t) {
 
   let supported = true;
   let reason = "";
-  if (header && header.format !== "TEXT") {
+  const headerFormat = header && header.format !== "TEXT" ? header.format : "";
+  const mediaOk = allowMediaHeader && (headerFormat === "DOCUMENT" || headerFormat === "IMAGE");
+  if (headerFormat && !mediaOk) {
     supported = false;
-    reason = "Image/video/document header wale templates support nahi hain";
+    reason = allowMediaHeader
+      ? "Video/location header wale templates support nahi hain (sirf PDF ya photo)"
+      : "Image/video/document header wale templates support nahi hain";
   } else if (header && /\{\{/.test(header.text || "")) {
     supported = false;
     reason = "Header mein variable wale templates support nahi hain";
@@ -175,6 +180,7 @@ export function analyzeTemplate(t) {
     bodyText,
     footer: comps.find((c) => c.type === "FOOTER")?.text || "",
     varNums,
+    headerFormat,
     supported,
     reason,
   };
