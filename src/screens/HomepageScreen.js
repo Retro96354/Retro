@@ -97,7 +97,7 @@ const PRIVACY_SECTIONS = [
   ['Your Rights', 'Subject to applicable law, you may request access to your information, correction of inaccurate information, deletion of information we are not required to keep, and disconnection of the authorized email account.'],
   ['Account Security', 'Keep your login credentials confidential and tell us promptly if you suspect unauthorized access. We are not responsible for activity resulting from credentials that were improperly disclosed or not protected, except where the law does not allow this limitation.'],
   ['Changes to This Policy', 'We may update this policy from time to time. The updated version will be published here with a new "Last updated" date.'],
-  ['Contact Us', 'For questions, requests or complaints about this policy, contact us at +91 9175185122 / +91 7627073230 or visit https://imperiial.tech.'],
+  ['Contact Us', 'For questions, requests or complaints about this policy, contact us at +91 9829078380 or visit https://imperiial.tech.'],
 ];
 
 const TERMS_SECTIONS = [
@@ -114,7 +114,7 @@ const TERMS_SECTIONS = [
   ['Intellectual Property', 'The software, design, interface, branding and technology of the Service belong to Imperiial or are used with the necessary rights. These Terms do not transfer ownership of any of it to you.'],
   ['Suspension or Termination', 'An account may be suspended or terminated for misuse, unauthorized access, violation of these Terms, non-payment or activity that may harm the Service or its users. You may also request termination of your account.'],
   ['Changes to These Terms', 'We may update these Terms from time to time. Updated Terms will be published in the app. Continued use after they take effect means you accept them.'],
-  ['Contact Us', 'For questions about these Terms, contact us at +91 9175185122 / +91 7627073230 or visit https://imperiial.tech.'],
+  ['Contact Us', 'For questions about these Terms, contact us at +91 9829078380 or visit https://imperiial.tech.'],
 ];
 
 /* ---------- Screen ---------- */
@@ -314,12 +314,11 @@ export default function RetroFoodsLanding({ onLogin, onSignup }) {
             </View>
             <View style={s.footerContact}>
               <Text style={s.footerHead}>Support</Text>
-              <Pressable onPress={() => Linking.openURL('tel:+919175185122')}><Text style={s.phone}>+91 9175185122</Text></Pressable>
-              <Pressable onPress={() => Linking.openURL('tel:+917627073230')}><Text style={s.phone}>+91 7627073230</Text></Pressable>
+              <Pressable onPress={() => Linking.openURL('tel:+91 9829078380')}><Text style={s.phone}>+91 9829078380</Text></Pressable>
             </View>
           </View>
           <View style={[wrap, s.footerBottom, !isWide && s.footerBottomStack]}>
-            <Text style={s.footerSmall}>© 2026 Retro Foods. Application built and maintained by Imperiial.</Text>
+            <Text style={s.footerSmall}>© 2026 Retro Foods. Application built by Imperiial.</Text>
             <View style={s.legalLinks}>
               <Pressable onPress={() => setModal('privacy')}><Text style={s.legalLink}>Privacy Policy</Text></Pressable>
               <Pressable onPress={() => setModal('terms')}><Text style={s.legalLink}>Terms & Conditions</Text></Pressable>
