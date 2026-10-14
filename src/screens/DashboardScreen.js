@@ -8,6 +8,7 @@ import { collection, onSnapshot, query, where, updateDoc, doc, getDoc } from 'fi
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
+  import { notifyOrderPrinted } from '../services/Whatsappapi';
 
 const SOUND_OPTIONS = [
   { name: 'Classic Bell', url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
@@ -590,6 +591,8 @@ autoPrintRef.current = autoPrint;
 
   const soundRef    = useRef(null);
   const isFirstLoad = useRef(true);
+  const [waNotice, setWaNotice] = useState('');
+  const waNoticeTimer = useRef(null);
 
   // ── Toggle today-only and persist ──
   const handleTodayToggle = () => {
@@ -751,6 +754,12 @@ useEffect(() => () => {
     setCurrentPage(1);
   };
 
+  const showWaNotice = (text) => {
+    setWaNotice(text);
+    if (waNoticeTimer.current) clearTimeout(waNoticeTimer.current);
+    waNoticeTimer.current = setTimeout(() => setWaNotice(''), 12000);
+  };
+
   // ── Print ──
   const handlePrint = async (order) => {
     try {
@@ -890,6 +899,16 @@ useEffect(() => () => {
           iframe.contentWindow.print();
           setPrintedOrders(prev => new Set([...prev, order.id]));
           updateDoc(doc(db, 'orders', order.id), { status: 'Completed' }).catch(() => {});
+         // WhatsApp: backend ko batao ki order print hua
+          const waOrderNo = order.id && order.id.startsWith(`${clientId}_`)
+            ? order.id.slice(clientId.length + 1)
+            : order.orderNo;
+          notifyOrderPrinted(waOrderNo);
+          notifyOrderPrinted(waOrderNo).then((res) => {
+          if (res && res.print === 'failed') {
+              showWaNotice(`Order #${order.orderNo}: WhatsApp message nahi gaya — ${res.error || 'error'}`);
+            }
+          });
           setTimeout(() => { document.body.removeChild(iframe); }, 1000);
         };
 
@@ -1035,6 +1054,14 @@ useEffect(() => () => {
         </View>
       </View>
 
+      {waNotice ? (
+        <TouchableOpacity style={styles.waNotice} onPress={() => setWaNotice('')} activeOpacity={0.8}>
+          <Ionicons name="logo-whatsapp" size={15} color="#92400e" />
+          <Text style={styles.waNoticeText} numberOfLines={2}>{waNotice}</Text>
+          <Ionicons name="close" size={14} color="#92400e" />
+        </TouchableOpacity>
+      ) : null}
+        
       {/* ── Table container ── */}
       <View style={styles.tableContainer}>
         {isMobile ? (
@@ -1142,6 +1169,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#22c55e', marginLeft: 2,
   },
   autoPrintBtnActive: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
+  waNotice: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a',
+    borderRadius: 8, paddingHorizontal: 12, paddingVertical: 9, marginBottom: 12,
+  },
+  waNoticeText: { flex: 1, fontSize: 12, color: '#92400e', fontWeight: '600' },
 
   tableContainer: {
     flex: 1, backgroundColor: 'white', borderRadius: 8,
