@@ -368,7 +368,7 @@ export default function App() {
               <Ionicons name="restaurant" size={18} color="white" />
             </TouchableOpacity>
             <Animated.View style={{ opacity: labelOpacity, flex: 1, overflow: 'hidden' }}>
-              <Text numberOfLines={1} style={styles.logoText}>MIGME</Text>
+              <Text numberOfLines={1} style={styles.logoText}>Retro</Text>
               <Text numberOfLines={1} style={styles.clientSubName}>{user?.businessName || ''}</Text>
             </Animated.View>
           </View>
