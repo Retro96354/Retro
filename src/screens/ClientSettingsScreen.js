@@ -962,43 +962,63 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
                   })}
                 </View>
 
-                <Text style={styles.fieldLabel}>"Accha tha" par kholne wala link (https)</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={b.goodUrl}
-                  onChangeText={(v) => setBlock(key, { goodUrl: v })}
-                  placeholder="https://www.ecatering.irctc.co.in"
-                  placeholderTextColor="#c7d0dc"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                />
+                {/* "Satisfied" wala link/message sirf tab, jab wo template mein quick-reply button ho.
+                    Agar "Satisfied" URL button hai to link template ke andar hi hai — yahan kuch nahi. */}
+                {(!tpl || (tpl.quickReplyButtons || []).some((q) => q.kind === 'good')) ? (
+                  <>
+                    <Text style={styles.fieldLabel}>"Satisfied" button dabane par kholne wala link (https)</Text>
+                    <TextInput
+                      style={styles.fieldInput}
+                      value={b.goodUrl}
+                      onChangeText={(v) => setBlock(key, { goodUrl: v })}
+                      placeholder="https://www.ecatering.irctc.co.in"
+                      placeholderTextColor="#c7d0dc"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="url"
+                    />
 
-                <Text style={styles.fieldLabel}>"Accha tha" ke baad ka message (optional)</Text>
-                <TextInput
-                  style={[styles.fieldInput, styles.textArea]}
-                  value={b.goodText}
-                  onChangeText={(v) => setBlock(key, { goodText: v })}
-                  placeholder="Khali chhodne par default message jayega"
-                  placeholderTextColor="#c7d0dc"
-                  multiline
-                  textAlignVertical="top"
-                />
+                    <Text style={styles.fieldLabel}>"Satisfied" dabane ke baad ka message (optional)</Text>
+                    <TextInput
+                      style={[styles.fieldInput, styles.textArea]}
+                      value={b.goodText}
+                      onChangeText={(v) => setBlock(key, { goodText: v })}
+                      placeholder="Khali chhodne par default message jayega"
+                      placeholderTextColor="#c7d0dc"
+                      multiline
+                      textAlignVertical="top"
+                    />
+                  </>
+                ) : (
+                  <View style={styles.mediaBox}>
+                    <Text style={styles.autoSub}>
+                      ✓ Is template ka "Satisfied" button URL button hai, uska link template ke andar hi set hai.
+                      Yahan kuch daalne ki zaroorat nahi.
+                    </Text>
+                  </View>
+                )}
 
-                <Text style={styles.fieldLabel}>"Accha nahi tha" par apology message (optional)</Text>
-                <TextInput
-                  style={[styles.fieldInput, styles.textArea]}
-                  value={b.badText}
-                  onChangeText={(v) => setBlock(key, { badText: v })}
-                  placeholder="Khali chhodne par default apology jayegi"
-                  placeholderTextColor="#c7d0dc"
-                  multiline
-                  textAlignVertical="top"
-                />
-                <Text style={styles.autoSub}>
-                  Link aur dono jawab tab kaam aate hain jab template mein "Accha tha" / "Accha nahi tha" jaise
-                  quick-reply buttons hon.
-                </Text>
+                {(!tpl || (tpl.quickReplyButtons || []).some((q) => q.kind === 'bad')) ? (
+                  <>
+                    <Text style={styles.fieldLabel}>
+                      {tpl && (tpl.quickReplyButtons || []).find((q) => q.kind === 'bad')
+                        ? `"${(tpl.quickReplyButtons || []).find((q) => q.kind === 'bad').text}" button dabane par jaane wala message`
+                        : '"Not Satisfied" button dabane par jaane wala message'}
+                    </Text>
+                    <TextInput
+                      style={[styles.fieldInput, styles.textArea]}
+                      value={b.badText}
+                      onChangeText={(v) => setBlock(key, { badText: v })}
+                      placeholder="Khali chhodne par default apology jayegi"
+                      placeholderTextColor="#c7d0dc"
+                      multiline
+                      textAlignVertical="top"
+                    />
+                    <Text style={styles.autoSub}>
+                      Customer ke button dabate hi ye message us customer ko apne aap chala jayega.
+                    </Text>
+                  </>
+                ) : null}
               </View>
             ) : null}
           </View>
