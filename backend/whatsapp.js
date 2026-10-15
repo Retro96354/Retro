@@ -613,6 +613,16 @@ module.exports = function registerWhatsApp(app, deps) {
     }
   }
 
+  // Quick-reply button "accha" wala hai ya "accha nahi" wala — button ke text se.
+  //   "Satisfied" -> good,  "Not Satisfied" / "Accha nahi tha" / "Bad" -> bad
+  // Do button hon aur dono ek jaise lagein to pehla good, doosra bad maana jata hai.
+  const NEGATIVE_BUTTON_RE = /\b(not|nahi|nahin|no|bad|poor|worst|unsatisfied|dissatisfied|unhappy)\b/i;
+  function classifyQuickReplies(qr) {
+    let kinds = qr.map((b) => (NEGATIVE_BUTTON_RE.test(b.text) ? "bad" : "good"));
+    if (qr.length === 2 && kinds[0] === kinds[1]) kinds = ["good", "bad"];
+    return qr.map((b, i) => ({ index: b.index, text: b.text, kind: kinds[i] }));
+  }
+
   // Template ko Meta se check karo: approved hai? hamare liye supported hai?
   async function inspectTemplate(cfg, name, language) {
     const r = await meta(
@@ -641,10 +651,16 @@ module.exports = function registerWhatsApp(app, deps) {
       if (b.type === "URL" && /\{\{/.test(b.url || "")) return { error: "Dynamic link button wale templates support nahi hain" };
       if (!["QUICK_REPLY", "URL", "PHONE_NUMBER"].includes(b.type)) return { error: `"${b.type}" button wale templates support nahi hain` };
     }
-    const quickReplies = btns.filter((b) => b.type === "QUICK_REPLY").length;
-    if (quickReplies > 2) return { error: "Max 2 quick-reply buttons support hote hain" };
+    // Button ka "index" template mein uski asli position hoti hai (URL/call button
+    // bhi ginte hain). Isliye quick-reply ko uski sahi position par bhejna zaroori hai.
+    const qr = btns
+      .map((b, i) => ({ index: i, type: b.type, text: String(b.text || "") }))
+      .filter((b) => b.type === "QUICK_REPLY");
+    if (qr.length > 2) return { error: "Max 2 quick-reply buttons support hote hain" };
+    const quickReplyButtons = classifyQuickReplies(qr);
+    const quickReplies = qr.length;
     const nums = [...(((body && body.text) || "").matchAll(/\{\{(\d+)\}\}/g))].map((m) => parseInt(m[1], 10));
-    return { language: t.language, category: t.category, quickReplies, varCount: new Set(nums).size, headerFormat };
+    return { language: t.language, category: t.category, quickReplies, quickReplyButtons, varCount: new Set(nums).size, headerFormat };
   }
 
   function vendorAllowed(block, order) {
@@ -666,6 +682,7 @@ module.exports = function registerWhatsApp(app, deps) {
       allVendors: !!b.allVendors,
       vendors,
       quickReplies: 0,
+      quickReplyButtons: [],
       headerFormat: "",
       headerUrl: String(b.headerUrl || "").trim(),
       headerFilename: String(b.headerFilename || "").trim().replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80),
@@ -695,6 +712,7 @@ module.exports = function registerWhatsApp(app, deps) {
     if (info.error) return { error: info.error };
     out.language = info.language;
     out.quickReplies = info.quickReplies;
+    out.quickReplyButtons = info.quickReplyButtons || [];
     out.headerFormat = info.headerFormat || "";
     if (out.headerFormat) {
       const what = out.headerFormat === "DOCUMENT" ? "PDF" : "photo";
@@ -712,8 +730,10 @@ module.exports = function registerWhatsApp(app, deps) {
     if (out.variables.some((v) => !String(v).trim())) return { error: "Har variable ke liye value chuniye" };
     if (kind === "review") {
       if (out.goodUrl && !/^https:\/\//.test(out.goodUrl)) return { error: "Link https:// se shuru hona chahiye" };
-      if (info.quickReplies > 0 && !out.goodUrl)
-        return { error: '"Accha tha" button dabane par kholne wala link (https) daalein' };
+      // Link tabhi chahiye jab template mein "Satisfied" quick-reply button ho.
+      // Agar "Satisfied" URL button hai (link template mein hi hai) to kuch nahi chahiye.
+      if (out.quickReplyButtons.some((b) => b.kind === "good") && !out.goodUrl)
+        return { error: '"Satisfied" button dabane par kholne wala link (https) daalein' };
     }
     return { block: out };
   }
@@ -743,7 +763,8 @@ module.exports = function registerWhatsApp(app, deps) {
 
   // Vendor chips ke liye
   app.get("/api/whatsapp/clients/:clientId/vendors", rateLimit(30), requireClientOrAdmin, (_req, res) => {
-    res.json(VENDOR_NAMES);
+    // backend.js sirf allowed vendors ki list deta hai; na mile to saare vendor-rules ke naam
+    res.json(typeof deps.getVendorNames === "function" ? deps.getVendorNames() : VENDOR_NAMES);
   });
 
   async function isOptedOut(clientId, phone) {
@@ -774,14 +795,20 @@ module.exports = function registerWhatsApp(app, deps) {
         parameters: tpl.variables.map((v) => ({ type: "text", text: fillTokens(v, order) })),
       });
     }
-    for (let i = 0; i < (tpl.quickReplies || 0); i++) {
+    // Purani saved settings mein quickReplyButtons nahi hota — tab pehle jaisa chalega
+    const qrButtons = Array.isArray(tpl.quickReplyButtons) && tpl.quickReplyButtons.length
+      ? tpl.quickReplyButtons
+      : Array.from({ length: tpl.quickReplies || 0 }, (_, i) => ({ index: i, kind: i === 0 ? "good" : "bad" }));
+    for (const b of qrButtons) {
       components.push({
         type: "button",
         sub_type: "quick_reply",
-        index: String(i),
+        index: String(b.index),
         parameters: [{
           type: "payload",
-          payload: mode === "review" ? `${i === 0 ? "FB_GOOD" : "FB_BAD"}:${order.orderNo}` : `QR${i}:${order.orderNo}`,
+          payload: mode === "review"
+            ? `${b.kind === "bad" ? "FB_BAD" : "FB_GOOD"}:${order.orderNo}`
+            : `QR${b.index}:${order.orderNo}`,
         }],
       });
     }
