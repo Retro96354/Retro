@@ -156,6 +156,17 @@ export function analyzeTemplate(t, { allowMediaHeader = false } = {}) {
   const nums = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map((m) => parseInt(m[1], 10));
   const varNums = [...new Set(nums)].sort((a, b) => a - b);
 
+  // Quick-reply buttons: "Satisfied" jaisa = good, "Not Satisfied" jaisa = bad
+  // (backend bhi bilkul isi tarah pehchanta hai)
+  const NEGATIVE = /\b(not|nahi|nahin|no|bad|poor|worst|unsatisfied|dissatisfied|unhappy)\b/i;
+  const qr = ((buttons && buttons.buttons) || [])
+    .map((b, i) => ({ index: i, type: b.type, text: String(b.text || "") }))
+    .filter((b) => b.type === "QUICK_REPLY");
+  let kinds = qr.map((b) => (NEGATIVE.test(b.text) ? "bad" : "good"));
+  if (qr.length === 2 && kinds[0] === kinds[1]) kinds = ["good", "bad"];
+  const quickReplyButtons = qr.map((b, i) => ({ index: b.index, text: b.text, kind: kinds[i] }));
+  const urlButtons = ((buttons && buttons.buttons) || []).filter((b) => b.type === "URL");
+
   let supported = true;
   let reason = "";
   const headerFormat = header && header.format !== "TEXT" ? header.format : "";
@@ -181,6 +192,8 @@ export function analyzeTemplate(t, { allowMediaHeader = false } = {}) {
     footer: comps.find((c) => c.type === "FOOTER")?.text || "",
     varNums,
     headerFormat,
+    quickReplyButtons,
+    urlButtons,
     supported,
     reason,
   };
