@@ -39,6 +39,8 @@ function mergeAuto(saved) {
   return { enabled: !!saved.enabled, print, review };
 }
 const DELAY_PRESETS = [30, 60, 120, 180];
+const MAX_WATCH = 4;
+const normNum = (n) => String(n || '').replace(/\D/g, '');
 
 function useScreenWidth() {
   const [width, setWidth] = useState(Dimensions.get('window').width);
@@ -76,7 +78,8 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
   const [wabaId, setWabaId] = useState('');
   const [accessToken, setAccessToken] = useState('');
   const [showToken, setShowToken] = useState(false);
-  const [watchList, setWatchList] = useState(['']);
+  const [watchList, setWatchList] = useState(['']);     // sirf naye numbers ka input
+  const [savedWatch, setSavedWatch] = useState([]);     // DB me saved numbers
   const [savingWatch, setSavingWatch] = useState(false);
 
   // Auto messages state
@@ -110,6 +113,23 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     })();
   }, [clientId]);
 
+  /* ── Auto messages: templates + vendors load ──
+     IMPORTANT: Ye function refreshWa se PEHLE define hona chahiye (aur
+     `if (loading) return` se bhi pehle), warna pehle render me useEffect
+     isse call karta hai aur "Cannot access before initialization" aata hai. */
+  const loadAutoMeta = async () => {
+    setAutoMetaError('');
+    try {
+      const list = await wa.getTemplates();
+      setTemplates(list.filter((t) => t.status === 'APPROVED').map((t) => wa.analyzeTemplate(t, { allowMediaHeader: true })));
+    } catch (e) {
+      setAutoMetaError(e.message);
+    }
+    try {
+      setVendorList(await wa.getVendors());
+    } catch (e) {}
+  };
+
   /* ── WhatsApp: status load ── */
   const refreshWa = async () => {
     setWaLoading(true);
@@ -119,7 +139,8 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
       setWaError('');
       setWaEditing(!st.connected); // connect nahi hai to form khud khul jaye
       const nums = (st.watchNumbers || []).filter(Boolean);
-      setWatchList(nums.length ? nums : ['']);
+      setSavedWatch(nums);
+      setWatchList(['']);
       if (st.connected) {
         setAuto(mergeAuto(st.autoMessages));
         loadAutoMeta();
@@ -199,25 +220,56 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
   };
 
   /* ── WhatsApp: watch numbers ── */
+  const remainingSlots = MAX_WATCH - savedWatch.length;
+
   const updateWatch = (i, v) => setWatchList((p) => p.map((x, idx) => (idx === i ? v : x)));
   const removeWatch = (i) =>
     setWatchList((p) => {
       const next = p.filter((_, idx) => idx !== i);
       return next.length ? next : [''];
     });
-  const addWatch = () => setWatchList((p) => (p.length < 4 ? [...p, ''] : p));
+  const addWatch = () => setWatchList((p) => (p.length < remainingSlots ? [...p, ''] : p));
+
+  const persistWatch = async (nums) => {
+    const r = await wa.saveWatchNumbers(nums);
+    setSavedWatch((r?.watchNumbers || nums).filter(Boolean));
+    setWatchList(['']); // input field blank
+  };
 
   const handleSaveWatch = async () => {
-    const nums = watchList.map((n) => n.trim()).filter(Boolean);
-    if (nums.some((n) => n.replace(/\D/g, '').length < 10)) {
+    const newNums = watchList.map((n) => n.trim()).filter(Boolean);
+    if (!newNums.length) {
+      wa.notify('Number khali hai', 'Pehle koi number daalein');
+      return;
+    }
+    if (newNums.some((n) => normNum(n).length < 10)) {
       wa.notify('Number galat hai', 'Har number kam se kam 10 digit ka hona chahiye');
+      return;
+    }
+    const merged = [...savedWatch];
+    newNums.forEach((n) => {
+      if (!merged.some((m) => normNum(m) === normNum(n))) merged.push(n);
+    });
+    if (merged.length > MAX_WATCH) {
+      wa.notify('Limit poori', 'Maximum 4 numbers hi ho sakte hain');
       return;
     }
     setSavingWatch(true);
     try {
-      const r = await wa.saveWatchNumbers(nums);
-      setWatchList(r.watchNumbers && r.watchNumbers.length ? r.watchNumbers : ['']);
+      await persistWatch(merged);
       wa.notify('✓ Saved', 'In numbers ke messages ab aapko dikhenge.');
+    } catch (e) {
+      wa.notify('Error', e.message);
+    }
+    setSavingWatch(false);
+  };
+
+  const handleRemoveSavedWatch = async (num) => {
+    const ok = await wa.confirmAsync('Number hatayein?', `${num} ke messages ab save nahi honge.`, 'Hatayein');
+    if (!ok) return;
+    setSavingWatch(true);
+    try {
+      await persistWatch(savedWatch.filter((n) => n !== num));
     } catch (e) {
       wa.notify('Error', e.message);
     }
@@ -290,6 +342,109 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     try {
       await updateDoc(doc(db, 'clients', clientId), { alertSound: opt.url });
     } catch (e) {}
+  };
+
+  /* ── Auto messages: helpers (early return se pehle) ── */
+  const setBlock = (key, patch) =>
+    setAuto((p) => ({ ...p, [key]: { ...p[key], ...patch } }));
+
+  const pickTemplate = (key, t) => {
+    setBlock(key, {
+      templateName: t.name,
+      language: t.language,
+      variables: t.varNums.map(() => ''),
+    });
+    setOpenPicker(null);
+  };
+
+  const setVar = (key, i, v) =>
+    setAuto((p) => {
+      const vars = [...p[key].variables];
+      vars[i] = v;
+      return { ...p, [key]: { ...p[key], variables: vars } };
+    });
+
+  const addVarToken = (key, i, tokenKey) =>
+    setAuto((p) => {
+      const vars = [...p[key].variables];
+      const cur = (vars[i] || '').trim();
+      vars[i] = cur ? `${cur} {{${tokenKey}}}` : `{{${tokenKey}}}`;
+      return { ...p, [key]: { ...p[key], variables: vars } };
+    });
+
+  const toggleVendor = (key, name) =>
+    setAuto((p) => {
+      const cur = p[key].vendors;
+      const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+      return { ...p, [key]: { ...p[key], vendors: next } };
+    });
+
+  const validateBlock = (key, label) => {
+    const b = auto[key];
+    if (!b.enabled) return null;
+    if (!b.templateName) return `${label}: template chuniye`;
+    if (b.variables.some((v) => !String(v || '').trim())) return `${label}: har variable ke liye value chuniye`;
+    const tplInfo = templates.find((t) => t.name === b.templateName && t.language === b.language);
+    if (tplInfo && tplInfo.headerFormat) {
+      const what = tplInfo.headerFormat === 'DOCUMENT' ? 'PDF' : 'photo';
+      if (!/^https:\/\//.test((b.headerUrl || '').trim())) return `${label}: ${what} ka https link daalein`;
+    }
+    if (!b.allVendors && b.vendors.length === 0) return `${label}: kam se kam ek vendor chuniye ya "Sab vendors" on karein`;
+    return null;
+  };
+
+  const handleSaveAuto = async () => {
+    const problem = validateBlock('print', 'Print message') || validateBlock('review', 'Review message');
+    if (problem) {
+      wa.notify('Adhoori jaankari', problem);
+      return;
+    }
+    const r = auto.review;
+    if (r.enabled) {
+      const mins = parseInt(r.delayMinutes, 10);
+      if (!mins || mins < 1 || mins > 1440) {
+        wa.notify('Time galat hai', 'Review kitni der baad jayega ye 1 se 1440 minute ke beech daalein');
+        return;
+      }
+    }
+    setSavingAuto(true);
+    try {
+      const payload = {
+        enabled: auto.enabled,
+        print: {
+          enabled: auto.print.enabled,
+          templateName: auto.print.templateName,
+          language: auto.print.language,
+          variables: auto.print.variables,
+          allVendors: auto.print.allVendors,
+          vendors: auto.print.vendors,
+          headerUrl: auto.print.headerUrl,
+          headerFilename: auto.print.headerFilename,
+        },
+        review: {
+          enabled: r.enabled,
+          templateName: r.templateName,
+          language: r.language,
+          variables: r.variables,
+          allVendors: r.allVendors,
+          vendors: r.vendors,
+          headerUrl: r.headerUrl,
+          headerFilename: r.headerFilename,
+          delayMinutes: parseInt(r.delayMinutes, 10) || 120,
+          goodUrl: r.goodUrl,
+          goodText: r.goodText,
+          badText: r.badText,
+        },
+      };
+      const saved = await wa.saveAutoMessages(payload);
+      setAuto(mergeAuto(saved));
+      wa.notify('✓ Saved', saved.enabled
+        ? 'Auto messages chalu hain. Ab order print karte hi ye apne aap chalenge.'
+        : 'Settings save ho gayi, par abhi upar ka master switch band hai.');
+    } catch (e) {
+      wa.notify('Save nahi hua', e.message);
+    }
+    setSavingAuto(false);
   };
 
   if (loading) {
@@ -607,165 +762,73 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
 
       <View style={styles.divider} />
 
-      {watchList.map((n, i) => (
-        <View key={i} style={styles.watchRow}>
-          <View style={[styles.inputWrapper, { flex: 1, marginBottom: 0 }]}>
-            <Ionicons name="call-outline" size={15} color="#94a3b8" style={styles.inputIcon} />
-            <TextInput
-              style={[styles.fieldInput, { paddingLeft: 36 }]}
-              placeholder="e.g. 9876543210"
-              placeholderTextColor="#c7d0dc"
-              value={n}
-              onChangeText={(v) => updateWatch(i, v)}
-              keyboardType="phone-pad"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-          <TouchableOpacity style={styles.watchRemove} onPress={() => removeWatch(i)}>
-            <Ionicons name="close-circle-outline" size={20} color="#ef4444" />
+      {remainingSlots > 0 ? (
+        <>
+          {watchList.map((n, i) => (
+            <View key={i} style={styles.watchRow}>
+              <View style={[styles.inputWrapper, { flex: 1, marginBottom: 0 }]}>
+                <Ionicons name="call-outline" size={15} color="#94a3b8" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.fieldInput, { paddingLeft: 36 }]}
+                  placeholder="e.g. 9876543210"
+                  placeholderTextColor="#c7d0dc"
+                  value={n}
+                  onChangeText={(v) => updateWatch(i, v)}
+                  keyboardType="phone-pad"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              {watchList.length > 1 ? (
+                <TouchableOpacity style={styles.watchRemove} onPress={() => removeWatch(i)}>
+                  <Ionicons name="close-circle-outline" size={20} color="#ef4444" />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          ))}
+
+          {watchList.length < remainingSlots ? (
+            <TouchableOpacity style={styles.addWatchBtn} onPress={addWatch}>
+              <Ionicons name="add-circle-outline" size={15} color="#6366f1" />
+              <Text style={styles.addWatchText}>Number jodein</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          <TouchableOpacity
+            style={[styles.btn, styles.btnPrimary, savingWatch && styles.btnDisabled]}
+            onPress={handleSaveWatch}
+            disabled={savingWatch}
+          >
+            {savingWatch
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <>
+                  <Ionicons name="save-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
+                  <Text style={styles.btnText}>Numbers save karein</Text>
+                </>
+            }
           </TouchableOpacity>
+        </>
+      ) : (
+        <Text style={styles.autoSub}>4 numbers ho gaye. Naya jodne ke liye neeche se koi number hatayein.</Text>
+      )}
+
+      {savedWatch.length > 0 ? (
+        <View style={{ marginTop: 18 }}>
+          <View style={styles.divider} />
+          <Text style={styles.fieldLabel}>SAVED NUMBERS ({savedWatch.length}/{MAX_WATCH})</Text>
+          {savedWatch.map((num) => (
+            <View key={num} style={styles.savedRow}>
+              <Ionicons name="checkmark-circle" size={16} color="#16a34a" />
+              <Text style={styles.savedText}>{num}</Text>
+              <TouchableOpacity onPress={() => handleRemoveSavedWatch(num)} disabled={savingWatch} style={styles.watchRemove}>
+                <Ionicons name="trash-outline" size={16} color="#ef4444" />
+              </TouchableOpacity>
+            </View>
+          ))}
         </View>
-      ))}
-
-      {watchList.length < 4 ? (
-        <TouchableOpacity style={styles.addWatchBtn} onPress={addWatch}>
-          <Ionicons name="add-circle-outline" size={15} color="#6366f1" />
-          <Text style={styles.addWatchText}>Number jodein</Text>
-        </TouchableOpacity>
       ) : null}
-
-      <TouchableOpacity
-        style={[styles.btn, styles.btnPrimary, savingWatch && styles.btnDisabled]}
-        onPress={handleSaveWatch}
-        disabled={savingWatch}
-      >
-        {savingWatch
-          ? <ActivityIndicator size="small" color="#fff" />
-          : <>
-              <Ionicons name="save-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
-              <Text style={styles.btnText}>Numbers save karein</Text>
-            </>
-        }
-      </TouchableOpacity>
     </View>
   );
-
-  /* ── Auto messages: templates + vendors load ── */
-  const loadAutoMeta = async () => {
-    setAutoMetaError('');
-    try {
-      const list = await wa.getTemplates();
-      setTemplates(list.filter((t) => t.status === 'APPROVED').map((t) => wa.analyzeTemplate(t, { allowMediaHeader: true })));
-    } catch (e) {
-      setAutoMetaError(e.message);
-    }
-    try {
-      setVendorList(await wa.getVendors());
-    } catch (e) {}
-  };
-
-  const setBlock = (key, patch) =>
-    setAuto((p) => ({ ...p, [key]: { ...p[key], ...patch } }));
-
-  const pickTemplate = (key, t) => {
-    setBlock(key, {
-      templateName: t.name,
-      language: t.language,
-      variables: t.varNums.map(() => ''),
-    });
-    setOpenPicker(null);
-  };
-
-  const setVar = (key, i, v) =>
-    setAuto((p) => {
-      const vars = [...p[key].variables];
-      vars[i] = v;
-      return { ...p, [key]: { ...p[key], variables: vars } };
-    });
-
-  const addVarToken = (key, i, tokenKey) =>
-    setAuto((p) => {
-      const vars = [...p[key].variables];
-      const cur = (vars[i] || '').trim();
-      vars[i] = cur ? `${cur} {{${tokenKey}}}` : `{{${tokenKey}}}`;
-      return { ...p, [key]: { ...p[key], variables: vars } };
-    });
-
-  const toggleVendor = (key, name) =>
-    setAuto((p) => {
-      const cur = p[key].vendors;
-      const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
-      return { ...p, [key]: { ...p[key], vendors: next } };
-    });
-
-  const validateBlock = (key, label) => {
-    const b = auto[key];
-    if (!b.enabled) return null;
-    if (!b.templateName) return `${label}: template chuniye`;
-    if (b.variables.some((v) => !String(v || '').trim())) return `${label}: har variable ke liye value chuniye`;
-    const tplInfo = templates.find((t) => t.name === b.templateName && t.language === b.language);
-    if (tplInfo && tplInfo.headerFormat) {
-      const what = tplInfo.headerFormat === 'DOCUMENT' ? 'PDF' : 'photo';
-      if (!/^https:\/\//.test((b.headerUrl || '').trim())) return `${label}: ${what} ka https link daalein`;
-    }
-    if (!b.allVendors && b.vendors.length === 0) return `${label}: kam se kam ek vendor chuniye ya "Sab vendors" on karein`;
-    return null;
-  };
-
-  const handleSaveAuto = async () => {
-    const problem = validateBlock('print', 'Print message') || validateBlock('review', 'Review message');
-    if (problem) {
-      wa.notify('Adhoori jaankari', problem);
-      return;
-    }
-    const r = auto.review;
-    if (r.enabled) {
-      const mins = parseInt(r.delayMinutes, 10);
-      if (!mins || mins < 1 || mins > 1440) {
-        wa.notify('Time galat hai', 'Review kitni der baad jayega ye 1 se 1440 minute ke beech daalein');
-        return;
-      }
-    }
-    setSavingAuto(true);
-    try {
-      const payload = {
-        enabled: auto.enabled,
-        print: {
-          enabled: auto.print.enabled,
-          templateName: auto.print.templateName,
-          language: auto.print.language,
-          variables: auto.print.variables,
-          allVendors: auto.print.allVendors,
-          vendors: auto.print.vendors,
-          headerUrl: auto.print.headerUrl,
-          headerFilename: auto.print.headerFilename,
-        },
-        review: {
-          enabled: r.enabled,
-          templateName: r.templateName,
-          language: r.language,
-          variables: r.variables,
-          allVendors: r.allVendors,
-          vendors: r.vendors,
-          headerUrl: r.headerUrl,
-          headerFilename: r.headerFilename,
-          delayMinutes: parseInt(r.delayMinutes, 10) || 120,
-          goodUrl: r.goodUrl,
-          goodText: r.goodText,
-          badText: r.badText,
-        },
-      };
-      const saved = await wa.saveAutoMessages(payload);
-      setAuto(mergeAuto(saved));
-      wa.notify('✓ Saved', saved.enabled
-        ? 'Auto messages chalu hain. Ab order print karte hi ye apne aap chalenge.'
-        : 'Settings save ho gayi, par abhi upar ka master switch band hai.');
-    } catch (e) {
-      wa.notify('Save nahi hua', e.message);
-    }
-    setSavingAuto(false);
-  };
 
   /* ── Auto messages: ek block (print / review) ── */
   const renderAutoBlock = (key, title, subtitle) => {
@@ -1361,6 +1424,12 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start', paddingVertical: 6, marginBottom: 10,
   },
   addWatchText: { fontSize: 12, fontWeight: '700', color: '#6366f1' },
+  savedRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#e2e8f0',
+    borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 8,
+  },
+  savedText: { flex: 1, fontSize: 13, fontWeight: '600', color: '#0f172a' },
 
   // ── Auto messages ──
   autoBlock: { paddingVertical: 4 },
