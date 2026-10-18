@@ -1,11 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// src/screens/WhatsAppOrderMessageScreen.js
-// Do tareeke se message bhejna:
-//   TAB 1 "Orders se":  Date chuno -> Vendor chuno -> us din ke orders ->
-//                       template chuno -> "Bhejein"   (print hua ho ya nahi, farak nahi)
-//   TAB 2 "Imported list": Excel/CSV (Order ID + Phone) import karo, system me
-//                       save ho jati hai -> select karo -> template chuno -> bulk bhejo
-// Template ab har baar bhejte waqt chuna jata hai.
+// src/screens/WhatsAppOrderMessageScreen.js   (v2 — naya design)
+// TAB 1 "Orders se":  Date chuno -> Vendor chuno -> us din ke orders -> template chuno -> Bhejein
+// TAB 2 "Imported list": Excel/CSV (Order ID + Phone) import -> select -> template chuno -> bulk bhejo
+// Desktop par 2 column (left: controls, right: list), mobile par single column.
 // ═══════════════════════════════════════════════════════════════════════════
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -19,22 +16,28 @@ import {
   RefreshControl,
   StyleSheet,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import * as XLSX from "xlsx";
 import * as wa from "../services/Whatsappapi";
 
 const C = {
-  bg: "#F5F6F8",
+  bg: "#F1F5F4",
   card: "#FFFFFF",
-  text: "#1B1F24",
-  sub: "#6B7280",
-  line: "#E5E7EB",
+  text: "#0F172A",
+  sub: "#64748B",
+  line: "#E2E8F0",
+  soft: "#F8FAFC",
   primary: "#128C7E",
   primaryDark: "#075E54",
+  primarySoft: "#E7F6F3",
   danger: "#DC2626",
-  warn: "#D97706",
-  ok: "#16A34A",
+  dangerSoft: "#FEF2F2",
+  warn: "#B45309",
+  warnSoft: "#FFFBEB",
+  ok: "#15803D",
+  okSoft: "#ECFDF3",
 };
 
 // Order ki kaun si jaankari template mein lag sakti hai
@@ -52,6 +55,7 @@ const IMPORT_TOKENS = TOKENS.filter((t) => t.key === "name" || t.key === "orderN
 
 const MAX_IMPORT_ROWS = 5000;
 const IMPORT_CHUNK = 1000;
+const WIDE_BREAKPOINT = 1000;
 
 // ── date helpers (IST, device timezone par nirbhar nahi) ────────────────────
 function istToday() {
@@ -62,9 +66,14 @@ function shiftDate(d, n) {
   return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10);
 }
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function prettyDate(d) {
   const [y, m, dd] = d.split("-").map(Number);
   return `${dd} ${MONTHS[m - 1]} ${y}`;
+}
+function dayName(d) {
+  const [y, m, dd] = d.split("-").map(Number);
+  return DAYS[new Date(Date.UTC(y, m - 1, dd)).getUTCDay()];
 }
 
 // Template ke {{n}} ko order ki value se bharke preview banao
@@ -163,6 +172,41 @@ function parseSheet(b64) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CHHOTE UI PIECES
+// ═══════════════════════════════════════════════════════════════════════════
+function Stat({ label, value, tone }) {
+  const color = tone === "ok" ? C.ok : tone === "warn" ? C.warn : tone === "danger" ? C.danger : C.text;
+  return (
+    <View style={styles.stat}>
+      <Text style={[styles.statValue, { color }]}>{value}</Text>
+      <Text style={styles.statLabel} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function Badge({ tone, text }) {
+  const map = {
+    ok: [C.okSoft, C.ok],
+    danger: [C.dangerSoft, C.danger],
+    warn: [C.warnSoft, C.warn],
+  };
+  const [bg, fg] = map[tone] || [C.soft, C.sub];
+  return (
+    <View style={[styles.badge, { backgroundColor: bg }]}>
+      <Text style={[styles.badgeText, { color: fg }]} numberOfLines={2}>
+        {text}
+      </Text>
+    </View>
+  );
+}
+
+function Checkbox({ on, disabled }) {
+  return <View style={[styles.box, on && styles.boxOn, disabled && styles.boxOff]}>{on ? <Text style={styles.tick}>✓</Text> : null}</View>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TEMPLATE CHUNNE WALA CARD (controlled — dono tabs me use hota hai)
 // ═══════════════════════════════════════════════════════════════════════════
 function TemplatePicker({ title, templates, loading, error, value, onChange, tokens, sample }) {
@@ -179,11 +223,14 @@ function TemplatePicker({ title, templates, loading, error, value, onChange, tok
 
   return (
     <View style={styles.card}>
-      <View style={styles.rowBetween}>
-        <Text style={styles.cardTitle}>{title}</Text>
+      <View style={styles.cardHead}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.eyebrow}>MESSAGE TEMPLATE</Text>
+          <Text style={styles.cardTitle}>{title}</Text>
+        </View>
         {tpl ? (
-          <TouchableOpacity onPress={() => setOpen((v) => !v)}>
-            <Text style={styles.link}>{open ? "Band karein" : "Badlein"}</Text>
+          <TouchableOpacity style={styles.ghostBtn} onPress={() => setOpen((v) => !v)}>
+            <Text style={styles.ghostBtnText}>{open ? "Band karein" : "Badlein"}</Text>
           </TouchableOpacity>
         ) : null}
       </View>
@@ -195,6 +242,15 @@ function TemplatePicker({ title, templates, loading, error, value, onChange, tok
           Abhi koi approved template nahi hai. WhatsApp Manager mein "Utility" category ka template banayein; approve
           hone mein kuch minute se 24 ghante lagte hain.
         </Text>
+      ) : null}
+
+      {tpl && !showList ? (
+        <View style={styles.selRow}>
+          <Text style={styles.selName} numberOfLines={1}>
+            {tpl.name}
+          </Text>
+          <Text style={styles.pill}>{tpl.category}</Text>
+        </View>
       ) : null}
 
       {showList
@@ -211,32 +267,41 @@ function TemplatePicker({ title, templates, loading, error, value, onChange, tok
                 }}
                 style={[styles.tplItem, on && styles.tplItemOn, !t.supported && { opacity: 0.5 }]}
               >
-                <View style={styles.rowBetween}>
-                  <Text style={styles.tplName}>{t.name}</Text>
-                  <Text style={styles.pill}>{t.category}</Text>
+                <View style={[styles.radio, on && styles.radioOn]}>{on ? <View style={styles.radioDot} /> : null}</View>
+                <View style={{ flex: 1 }}>
+                  <View style={styles.rowBetween}>
+                    <Text style={styles.tplName} numberOfLines={1}>
+                      {t.name}
+                    </Text>
+                    <Text style={styles.pill}>{t.category}</Text>
+                  </View>
+                  <Text style={styles.tplBody} numberOfLines={on ? undefined : 2}>
+                    {t.bodyText}
+                  </Text>
+                  {!t.supported ? <Text style={styles.warnText}>⚠ {t.reason}</Text> : null}
                 </View>
-                <Text style={styles.tplBody} numberOfLines={on ? undefined : 2}>
-                  {t.bodyText}
-                </Text>
-                {!t.supported ? <Text style={styles.warnText}>⚠ {t.reason}</Text> : null}
               </TouchableOpacity>
             );
           })
         : null}
 
       {tpl ? (
-        <View style={{ marginTop: 10 }}>
-          <View style={styles.bubble}>
-            <Text style={styles.bubbleText}>{renderPreview(tpl.bodyText, previewVars, sample)}</Text>
+        <View style={{ marginTop: 12 }}>
+          <Text style={styles.label}>Preview</Text>
+          <View style={styles.chatBg}>
+            <View style={styles.bubble}>
+              <Text style={styles.bubbleText}>{renderPreview(tpl.bodyText, previewVars, sample)}</Text>
+              <Text style={styles.bubbleTime}>12:00 ✓✓</Text>
+            </View>
           </View>
 
           {tpl.varNums.length === 0 ? (
-            <Text style={styles.muted}>Is template mein koi variable nahi hai.</Text>
+            <Text style={[styles.muted, { marginTop: 10 }]}>Is template mein koi variable nahi hai.</Text>
           ) : (
-            <Text style={styles.label}>Har variable mein kya jaye:</Text>
+            <Text style={[styles.label, { marginTop: 14 }]}>Har variable mein kya jaye</Text>
           )}
           {tpl.varNums.map((n, idx) => (
-            <View key={n} style={{ marginBottom: 12 }}>
+            <View key={n} style={styles.varBox}>
               <Text style={styles.varLabel}>{`{{${n}}}`}</Text>
               <TextInput
                 style={styles.input}
@@ -264,6 +329,9 @@ function TemplatePicker({ title, templates, loading, error, value, onChange, tok
 // MAIN SCREEN
 // ═══════════════════════════════════════════════════════════════════════════
 export default function WhatsAppOrderMessageScreen() {
+  const { width } = useWindowDimensions();
+  const wide = width >= WIDE_BREAKPOINT;
+
   const [tab, setTab] = useState("orders"); // "orders" | "imported"
 
   // ── common ────────────────────────────────────────────────────────────────
@@ -388,6 +456,8 @@ export default function WhatsAppOrderMessageScreen() {
   const visible = useMemo(() => (vendor ? orders.filter((o) => o.vendorName === vendor) : orders), [orders, vendor]);
   const isSent = (o) => !!o.waMessage?.sentAt;
   const eligible = useMemo(() => visible.filter((o) => o.phone && !isSent(o)), [visible]);
+  const orderSentCount = useMemo(() => visible.filter((o) => !!o.waMessage?.sentAt).length, [visible]);
+  const noPhoneCount = useMemo(() => visible.filter((o) => !o.phone).length, [visible]);
 
   // vendor/date badalne par bhejne layak sab orders apne aap select
   useEffect(() => {
@@ -651,6 +721,37 @@ export default function WhatsAppOrderMessageScreen() {
   const canSend = orderInfo.ready && selectedOrders.length > 0 && !sending && !running;
   const canSendImp = importInfo.ready && impSelected.length > 0 && !impSending && !running;
 
+  const isOrders = tab === "orders";
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // UI BLOCKS
+  // ═════════════════════════════════════════════════════════════════════════
+  const header = (
+    <View style={styles.pageHeader}>
+      <View
+        style={[
+          styles.pageHeaderInner,
+          { flexDirection: wide ? "row" : "column", alignItems: wide ? "center" : "stretch" },
+        ]}
+      >
+        <View style={{ flex: 1, marginBottom: wide ? 0 : 12 }}>
+          <Text style={styles.pageTitle}>WhatsApp Messages</Text>
+          <Text style={styles.pageSub}>Order ya imported list ke customers ko template message bhejein</Text>
+        </View>
+        <View style={styles.segment}>
+          <TouchableOpacity style={[styles.segBtn, isOrders && styles.segBtnOn]} onPress={() => setTab("orders")}>
+            <Text style={[styles.segText, isOrders && styles.segTextOn]}>Orders se bhejein</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.segBtn, !isOrders && styles.segBtnOn]} onPress={() => setTab("imported")}>
+            <Text style={[styles.segText, !isOrders && styles.segTextOn]}>
+              Imported list{imported.length ? ` (${imported.length})` : ""}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+
   const tokenBanner =
     status?.tokenValid === false ? (
       <View style={styles.banner}>
@@ -682,41 +783,54 @@ export default function WhatsAppOrderMessageScreen() {
     </View>
   ) : null;
 
-  // ── TAB 1 header ──────────────────────────────────────────────────────────
-  const ordersHeader = (
+  // ── TAB 1: controls (left panel) ──────────────────────────────────────────
+  const ordersControls = (
     <View>
       {tokenBanner}
 
       {/* Date */}
-      <View style={styles.dateBar}>
-        <TouchableOpacity style={styles.dateArrow} onPress={() => setDate(shiftDate(date, -1))}>
-          <Text style={styles.dateArrowText}>‹</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={{ flex: 1, alignItems: "center" }} onPress={() => setDate(istToday())}>
-          <Text style={styles.dateText}>{prettyDate(date)}</Text>
-          <Text style={styles.dateSub}>{date === istToday() ? "Aaj" : "Aaj par jaane ke liye dabayein"}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.dateArrow} onPress={() => setDate(shiftDate(date, 1))}>
-          <Text style={styles.dateArrowText}>›</Text>
-        </TouchableOpacity>
+      <View style={styles.card}>
+        <Text style={styles.eyebrow}>DATE</Text>
+        <View style={styles.dateRow}>
+          <TouchableOpacity style={styles.dateArrow} onPress={() => setDate(shiftDate(date, -1))}>
+            <Text style={styles.dateArrowText}>‹</Text>
+          </TouchableOpacity>
+          <View style={{ flex: 1, alignItems: "center" }}>
+            <Text style={styles.dateText}>
+              {dayName(date)}, {prettyDate(date)}
+            </Text>
+            <Text style={styles.dateSub}>{date === istToday() ? "Aaj" : "Purani / aane wali date"}</Text>
+          </View>
+          <TouchableOpacity style={styles.dateArrow} onPress={() => setDate(shiftDate(date, 1))}>
+            <Text style={styles.dateArrowText}>›</Text>
+          </TouchableOpacity>
+        </View>
+        {date !== istToday() ? (
+          <TouchableOpacity style={styles.todayBtn} onPress={() => setDate(istToday())}>
+            <Text style={styles.todayBtnText}>Aaj par jaayein</Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {runCard}
 
       {/* Vendors */}
-      <Text style={styles.sectionTitle}>Vendor chuniye</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 6 }}>
-        <TouchableOpacity style={[styles.chip, !vendor && styles.chipOn]} onPress={() => setVendor(null)}>
-          <Text style={[styles.chipText, !vendor && styles.chipTextOn]}>Sab ({orders.length})</Text>
-        </TouchableOpacity>
-        {vendors.map(([name, count]) => (
-          <TouchableOpacity key={name} style={[styles.chip, vendor === name && styles.chipOn]} onPress={() => setVendor(name)}>
-            <Text style={[styles.chipText, vendor === name && styles.chipTextOn]}>
-              {name} ({count})
-            </Text>
+      <View style={styles.card}>
+        <Text style={styles.eyebrow}>VENDOR</Text>
+        <View style={styles.chipWrap}>
+          <TouchableOpacity style={[styles.chip, !vendor && styles.chipOn]} onPress={() => setVendor(null)}>
+            <Text style={[styles.chipText, !vendor && styles.chipTextOn]}>Sab</Text>
+            <Text style={[styles.chipCount, !vendor && styles.chipCountOn]}>{orders.length}</Text>
           </TouchableOpacity>
-        ))}
-      </ScrollView>
+          {vendors.map(([name, count]) => (
+            <TouchableOpacity key={name} style={[styles.chip, vendor === name && styles.chipOn]} onPress={() => setVendor(name)}>
+              <Text style={[styles.chipText, vendor === name && styles.chipTextOn]}>{name}</Text>
+              <Text style={[styles.chipCount, vendor === name && styles.chipCountOn]}>{count}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        {vendors.length === 0 ? <Text style={styles.muted}>Is date par koi order nahi hai.</Text> : null}
+      </View>
 
       {/* Template */}
       <TemplatePicker
@@ -729,66 +843,97 @@ export default function WhatsAppOrderMessageScreen() {
         tokens={TOKENS}
         sample={sample}
       />
+    </View>
+  );
 
+  // ── TAB 1: list header (right panel) ──────────────────────────────────────
+  const ordersListHeader = (
+    <View style={{ marginBottom: 4 }}>
+      <View style={styles.statRow}>
+        <Stat label="Total orders" value={visible.length} />
+        <Stat label="Bhejne layak" value={eligible.length} tone="ok" />
+        <Stat label="Bheje gaye" value={orderSentCount} />
+        <Stat label="Number nahi" value={noPhoneCount} tone={noPhoneCount ? "warn" : undefined} />
+      </View>
       {visible.length > 0 ? (
-        <TouchableOpacity style={styles.selectAll} onPress={toggleAll}>
-          <View style={[styles.box, allSelected && styles.boxOn]}>{allSelected ? <Text style={styles.tick}>✓</Text> : null}</View>
+        <TouchableOpacity style={styles.selectAll} onPress={toggleAll} activeOpacity={0.7}>
+          <Checkbox on={allSelected} />
           <Text style={styles.selectAllText}>
-            Sab select karein ({eligible.length} bhejne layak, {visible.length} orders)
+            Sab select karein <Text style={styles.muted}>({selectedOrders.length} selected)</Text>
           </Text>
         </TouchableOpacity>
       ) : null}
     </View>
   );
 
-  // ── TAB 2 header ──────────────────────────────────────────────────────────
-  const importedHeader = (
+  // ── TAB 2: controls (left panel) ──────────────────────────────────────────
+  const importedControls = (
     <View>
       {tokenBanner}
       {runCard}
 
-      {/* Import */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Excel / CSV se contacts import karein</Text>
-        <Text style={[styles.muted, { marginTop: 6, marginBottom: 12 }]}>
-          File me 2 column chahiye: Order ID aur Phone (chahein to Name bhi). Pehli row me heading ho to behtar. Ek baar
-          me max {MAX_IMPORT_ROWS} rows. Import ke baad list yahin save rehti hai.
-        </Text>
-        <TouchableOpacity style={[styles.primaryBtn, importing && styles.btnDisabled]} onPress={doImport} disabled={importing}>
-          {importing ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>Excel / CSV file chuniye</Text>}
+        <Text style={styles.eyebrow}>IMPORT</Text>
+        <Text style={styles.cardTitle}>Excel / CSV se contacts</Text>
+        <TouchableOpacity
+          style={[styles.dropZone, importing && styles.btnDisabled]}
+          onPress={doImport}
+          disabled={importing}
+          activeOpacity={0.7}
+        >
+          {importing ? (
+            <ActivityIndicator color={C.primary} />
+          ) : (
+            <>
+              <Text style={styles.dropIcon}>⬆</Text>
+              <Text style={styles.dropTitle}>Excel / CSV file chuniye</Text>
+              <Text style={styles.dropHint}>Columns: Order ID · Phone · Name (optional)</Text>
+            </>
+          )}
         </TouchableOpacity>
-        {imported.length > 0 ? (
-          <Text style={[styles.muted, { marginTop: 10 }]}>
-            Saved: {imported.length} contacts · Bheje gaye: {sentCount}
-          </Text>
-        ) : null}
+        <Text style={[styles.muted, { marginTop: 10 }]}>
+          Pehli row me heading ho to behtar. Ek baar me max {MAX_IMPORT_ROWS} rows. Import ke baad list yahin save rehti
+          hai.
+        </Text>
+      </View>
+
+      {imported.length > 0 ? (
+        <TemplatePicker
+          title="Kaun sa message bhejna hai?"
+          templates={templates}
+          loading={tplLoading}
+          error={tplError}
+          value={importTpl}
+          onChange={setImportTpl}
+          tokens={IMPORT_TOKENS}
+          sample={impSampleOrder}
+        />
+      ) : null}
+    </View>
+  );
+
+  // ── TAB 2: list header (right panel) ──────────────────────────────────────
+  const importedListHeader = (
+    <View style={{ marginBottom: 4 }}>
+      <View style={styles.statRow}>
+        <Stat label="Saved" value={imported.length} />
+        <Stat label="Bhejne baaki" value={imported.length - sentCount} tone="ok" />
+        <Stat label="Bheje gaye" value={sentCount} />
+        <Stat label="Selected" value={impSelected.length} />
       </View>
 
       {imported.length > 0 ? (
         <>
-          {/* Template */}
-          <TemplatePicker
-            title="Kaun sa message bhejna hai?"
-            templates={templates}
-            loading={tplLoading}
-            error={tplError}
-            value={importTpl}
-            onChange={setImportTpl}
-            tokens={IMPORT_TOKENS}
-            sample={impSampleOrder}
-          />
-
-          {/* Search + filter */}
           <TextInput
-            style={styles.input}
+            style={[styles.input, styles.searchInput]}
             value={impSearch}
             onChangeText={setImpSearch}
-            placeholder="Order ID, number ya naam se dhoondhein"
+            placeholder="🔍  Order ID, number ya naam se dhoondhein"
             placeholderTextColor={C.sub}
             autoCapitalize="none"
             autoCorrect={false}
           />
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 6 }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 4 }}>
             {[
               ["all", `Sab (${imported.length})`],
               ["unsent", `Bhejne baaki (${imported.length - sentCount})`],
@@ -800,22 +945,22 @@ export default function WhatsAppOrderMessageScreen() {
             ))}
           </ScrollView>
 
-          <TouchableOpacity style={styles.selectAll} onPress={toggleAllImp}>
-            <View style={[styles.box, impAllSelected && styles.boxOn]}>{impAllSelected ? <Text style={styles.tick}>✓</Text> : null}</View>
+          <TouchableOpacity style={styles.selectAll} onPress={toggleAllImp} activeOpacity={0.7}>
+            <Checkbox on={impAllSelected} />
             <Text style={styles.selectAllText}>
-              Sab select karein ({impEligible.length} bhejne layak, {impVisible.length} dikh rahe)
+              Sab select karein <Text style={styles.muted}>({impEligible.length} bhejne layak, {impVisible.length} dikh rahe)</Text>
             </Text>
           </TouchableOpacity>
 
           <View style={styles.actionRow}>
             <TouchableOpacity
-              style={[styles.outlineBtn, (impSelected.length === 0 || impBusy) && styles.btnDisabled]}
+              style={[styles.dangerBtn, (impSelected.length === 0 || impBusy) && styles.btnDisabled]}
               onPress={deleteSelectedImported}
               disabled={impSelected.length === 0 || impBusy}
             >
               <Text style={styles.dangerText}>Selected hatayein ({impSelected.length})</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.outlineBtn, impBusy && styles.btnDisabled]} onPress={deleteAllImported} disabled={impBusy}>
+            <TouchableOpacity style={[styles.dangerBtn, impBusy && styles.btnDisabled]} onPress={deleteAllImported} disabled={impBusy}>
               <Text style={styles.dangerText}>Poori list hatayein</Text>
             </TouchableOpacity>
           </View>
@@ -824,264 +969,450 @@ export default function WhatsAppOrderMessageScreen() {
     </View>
   );
 
-  // ── render ────────────────────────────────────────────────────────────────
-  const tabBar = (
-    <View style={styles.tabBar}>
-      <TouchableOpacity style={[styles.tab, tab === "orders" && styles.tabOn]} onPress={() => setTab("orders")}>
-        <Text style={[styles.tabText, tab === "orders" && styles.tabTextOn]}>Orders se bhejein</Text>
+  // ── LISTS ─────────────────────────────────────────────────────────────────
+  const withControls = (controls, listHeader) => (wide ? listHeader : <View>{controls}{listHeader}</View>);
+
+  const ordersList = loading ? (
+    <View style={styles.center}>
+      <ActivityIndicator size="large" color={C.primary} />
+    </View>
+  ) : error ? (
+    <View style={styles.center}>
+      <Text style={styles.errorText}>{error}</Text>
+      <TouchableOpacity style={[styles.primaryBtn, { marginTop: 16, paddingHorizontal: 24 }]} onPress={() => load(date)}>
+        <Text style={styles.primaryBtnText}>Dobara try karein</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={[styles.tab, tab === "imported" && styles.tabOn]} onPress={() => setTab("imported")}>
-        <Text style={[styles.tabText, tab === "imported" && styles.tabTextOn]}>
-          Imported list{imported.length ? ` (${imported.length})` : ""}
-        </Text>
+    </View>
+  ) : (
+    <FlatList
+      data={visible}
+      extraData={selected}
+      keyExtractor={(o) => o.orderNo}
+      ListHeaderComponent={withControls(ordersControls, ordersListHeader)}
+      contentContainerStyle={styles.list}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            load(date, true);
+          }}
+        />
+      }
+      ListEmptyComponent={
+        <View style={styles.emptyBox}>
+          <Text style={styles.emptyIcon}>📭</Text>
+          <Text style={styles.empty}>
+            {prettyDate(date)} ko {vendor ? `${vendor} ke` : ""} koi order nahi hai.
+          </Text>
+        </View>
+      }
+      renderItem={({ item: o }) => {
+        const sent = isSent(o);
+        const on = !!selected[o.orderNo];
+        const initial = (o.customerName || "?").trim().charAt(0).toUpperCase() || "?";
+        const meta = [o.vendorName, o.trainInfo, o.coach, o.deliveryTime].filter(Boolean);
+        return (
+          <TouchableOpacity
+            activeOpacity={o.phone ? 0.7 : 1}
+            onPress={() => toggle(o)}
+            style={[styles.orderCard, on && styles.orderCardOn, !o.phone && { opacity: 0.6 }]}
+          >
+            <Checkbox on={on} disabled={!o.phone} />
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{initial}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={styles.rowBetween}>
+                <Text style={styles.orderName} numberOfLines={1}>
+                  {o.customerName || "(naam nahi)"}
+                </Text>
+                <Text style={styles.orderNo}>#{o.orderNo}</Text>
+              </View>
+              <Text style={styles.orderPhone}>{o.phone ? `+${o.phone}` : "Number nahi mila"}</Text>
+              {meta.length ? (
+                <View style={styles.metaRow}>
+                  {meta.map((m, i) => (
+                    <View key={`${m}-${i}`} style={styles.metaChip}>
+                      <Text style={styles.metaText}>{m}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              {sent ? <Badge tone="ok" text="✓ Message bheja gaya" /> : null}
+              {!sent && o.waMessageError ? <Badge tone="danger" text={`✗ Pichli baar fail: ${o.waMessageError}`} /> : null}
+              {!o.phone ? <Badge tone="warn" text="Number nahi — message nahi jayega" /> : null}
+            </View>
+          </TouchableOpacity>
+        );
+      }}
+    />
+  );
+
+  const importedList = impLoading ? (
+    <View style={styles.center}>
+      <ActivityIndicator size="large" color={C.primary} />
+    </View>
+  ) : impError ? (
+    <View style={styles.center}>
+      <Text style={styles.errorText}>{impError}</Text>
+      <TouchableOpacity style={[styles.primaryBtn, { marginTop: 16, paddingHorizontal: 24 }]} onPress={() => loadImported()}>
+        <Text style={styles.primaryBtnText}>Dobara try karein</Text>
       </TouchableOpacity>
+    </View>
+  ) : (
+    <FlatList
+      data={impVisible}
+      extraData={impSel}
+      keyExtractor={(r) => String(r.orderNo)}
+      ListHeaderComponent={withControls(importedControls, importedListHeader)}
+      contentContainerStyle={styles.list}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      initialNumToRender={20}
+      maxToRenderPerBatch={30}
+      windowSize={10}
+      ListEmptyComponent={
+        <View style={styles.emptyBox}>
+          <Text style={styles.emptyIcon}>{imported.length === 0 ? "📄" : "🔎"}</Text>
+          <Text style={styles.empty}>
+            {imported.length === 0 ? "Abhi koi list import nahi hui. Excel file chuniye." : "Is filter me koi contact nahi hai."}
+          </Text>
+        </View>
+      }
+      renderItem={({ item: r }) => {
+        const sent = !!r.waMessage?.sentAt;
+        const on = !!impSel[r.orderNo];
+        const initial = (r.name || "#").trim().charAt(0).toUpperCase() || "#";
+        return (
+          <TouchableOpacity activeOpacity={0.7} onPress={() => toggleImp(r)} style={[styles.orderCard, on && styles.orderCardOn]}>
+            <Checkbox on={on} />
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{initial}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <View style={styles.rowBetween}>
+                <Text style={styles.orderName} numberOfLines={1}>
+                  {r.name || `#${r.orderNo}`}
+                </Text>
+                <Text style={styles.orderNo}>{r.name ? `#${r.orderNo}` : ""}</Text>
+              </View>
+              <Text style={styles.orderPhone}>+{r.phone}</Text>
+              {sent ? <Badge tone="ok" text="✓ Message bheja gaya" /> : null}
+              {!sent && r.waMessageError ? <Badge tone="danger" text={`✗ Pichli baar fail: ${r.waMessageError}`} /> : null}
+            </View>
+          </TouchableOpacity>
+        );
+      }}
+    />
+  );
+
+  // ── SEND BAR ──────────────────────────────────────────────────────────────
+  const renderBar = ({ summary, label, enabled, busy, onPress }) => (
+    <View style={styles.bottomBar}>
+      <View style={styles.bottomInner}>
+        {wide ? (
+          <Text style={styles.bottomSummary} numberOfLines={1}>
+            {summary}
+          </Text>
+        ) : null}
+        <TouchableOpacity
+          style={[styles.primaryBtn, styles.sendBtn, !enabled && styles.btnDisabled]}
+          onPress={onPress}
+          disabled={!enabled}
+        >
+          {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>{label}</Text>}
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
+  const ordersBar =
+    !loading && !error
+      ? renderBar({
+          summary: `${selectedOrders.length} selected · ${vendor || "Sab vendors"} · ${prettyDate(date)}`,
+          label: running
+            ? "Bhej rahe hain…"
+            : !orderInfo.tpl
+            ? "Pehle template chuniye"
+            : !orderInfo.ready
+            ? "Variables bharein"
+            : `${selectedOrders.length} customers ko message bhejein`,
+          enabled: canSend,
+          busy: sending,
+          onPress: send,
+        })
+      : null;
+
+  const importedBar =
+    !impLoading && !impError && imported.length > 0
+      ? renderBar({
+          summary: `${impSelected.length} contacts selected`,
+          label: running
+            ? "Bhej rahe hain…"
+            : !importInfo.tpl
+            ? "Pehle template chuniye"
+            : !importInfo.ready
+            ? "Variables bharein"
+            : `${impSelected.length} contacts ko message bhejein`,
+          enabled: canSendImp,
+          busy: impSending,
+          onPress: sendImported,
+        })
+      : null;
+
+  const list = isOrders ? ordersList : importedList;
+  const bar = isOrders ? ordersBar : importedBar;
+  const controls = isOrders ? ordersControls : importedControls;
+
   return (
     <View style={styles.screen}>
-      {tabBar}
-
-      {tab === "orders" ? (
-        loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator size="large" color={C.primary} />
-          </View>
-        ) : error ? (
-          <View style={styles.center}>
-            <Text style={styles.errorText}>{error}</Text>
-            <TouchableOpacity style={[styles.primaryBtn, { marginTop: 16, paddingHorizontal: 24 }]} onPress={() => load(date)}>
-              <Text style={styles.primaryBtnText}>Dobara try karein</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <FlatList
-            data={visible}
-            extraData={selected}
-            keyExtractor={(o) => o.orderNo}
-            ListHeaderComponent={ordersHeader}
-            contentContainerStyle={styles.list}
+      {header}
+      {wide ? (
+        <View style={styles.bodyWide}>
+          <ScrollView
+            style={styles.side}
+            contentContainerStyle={styles.sideContent}
             keyboardShouldPersistTaps="handled"
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={() => {
-                  setRefreshing(true);
-                  load(date, true);
-                }}
-              />
-            }
-            ListEmptyComponent={
-              <Text style={styles.empty}>
-                {prettyDate(date)} ko {vendor ? `${vendor} ke` : ""} koi order nahi hai.
-              </Text>
-            }
-            renderItem={({ item: o }) => {
-              const sent = isSent(o);
-              const on = !!selected[o.orderNo];
-              return (
-                <TouchableOpacity
-                  activeOpacity={o.phone ? 0.7 : 1}
-                  onPress={() => toggle(o)}
-                  style={[styles.orderCard, !o.phone && { opacity: 0.55 }]}
-                >
-                  <View style={[styles.box, on && styles.boxOn, !o.phone && styles.boxOff]}>
-                    {on ? <Text style={styles.tick}>✓</Text> : null}
-                  </View>
-                  <View style={{ flex: 1, marginLeft: 12 }}>
-                    <View style={styles.rowBetween}>
-                      <Text style={styles.orderName} numberOfLines={1}>
-                        {o.customerName || "(naam nahi)"}
-                      </Text>
-                      <Text style={styles.orderNo}>#{o.orderNo}</Text>
-                    </View>
-                    <Text style={styles.muted}>
-                      {o.phone ? `+${o.phone}` : "Number nahi mila"}
-                      {o.vendorName ? `  ·  ${o.vendorName}` : ""}
-                    </Text>
-                    <Text style={styles.muted} numberOfLines={1}>
-                      {[o.trainInfo, o.coach, o.deliveryTime].filter(Boolean).join("  ·  ")}
-                    </Text>
-                    {sent ? <Text style={styles.sentText}>✓ Message bheja gaya</Text> : null}
-                    {!sent && o.waMessageError ? (
-                      <Text style={styles.failText} numberOfLines={2}>
-                        ✗ Pichli baar fail: {o.waMessageError}
-                      </Text>
-                    ) : null}
-                  </View>
-                </TouchableOpacity>
-              );
-            }}
-          />
-        )
-      ) : impLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={C.primary} />
-        </View>
-      ) : impError ? (
-        <View style={styles.center}>
-          <Text style={styles.errorText}>{impError}</Text>
-          <TouchableOpacity style={[styles.primaryBtn, { marginTop: 16, paddingHorizontal: 24 }]} onPress={() => loadImported()}>
-            <Text style={styles.primaryBtnText}>Dobara try karein</Text>
-          </TouchableOpacity>
+            showsVerticalScrollIndicator={false}
+          >
+            {controls}
+          </ScrollView>
+          <View style={styles.main}>
+            {list}
+            {bar}
+          </View>
         </View>
       ) : (
-        <FlatList
-          data={impVisible}
-          extraData={impSel}
-          keyExtractor={(r) => String(r.orderNo)}
-          ListHeaderComponent={importedHeader}
-          contentContainerStyle={styles.list}
-          keyboardShouldPersistTaps="handled"
-          initialNumToRender={20}
-          maxToRenderPerBatch={30}
-          windowSize={10}
-          ListEmptyComponent={
-            <Text style={styles.empty}>
-              {imported.length === 0 ? "Abhi koi list import nahi hui. Upar se Excel file chuniye." : "Is filter me koi contact nahi hai."}
-            </Text>
-          }
-          renderItem={({ item: r }) => {
-            const sent = !!r.waMessage?.sentAt;
-            const on = !!impSel[r.orderNo];
-            return (
-              <TouchableOpacity activeOpacity={0.7} onPress={() => toggleImp(r)} style={styles.orderCard}>
-                <View style={[styles.box, on && styles.boxOn]}>{on ? <Text style={styles.tick}>✓</Text> : null}</View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <View style={styles.rowBetween}>
-                    <Text style={styles.orderName} numberOfLines={1}>
-                      #{r.orderNo}
-                    </Text>
-                    <Text style={styles.orderNo}>+{r.phone}</Text>
-                  </View>
-                  {r.name ? <Text style={styles.muted}>{r.name}</Text> : null}
-                  {sent ? <Text style={styles.sentText}>✓ Message bheja gaya</Text> : null}
-                  {!sent && r.waMessageError ? (
-                    <Text style={styles.failText} numberOfLines={2}>
-                      ✗ Pichli baar fail: {r.waMessageError}
-                    </Text>
-                  ) : null}
-                </View>
-              </TouchableOpacity>
-            );
-          }}
-        />
+        <View style={{ flex: 1 }}>
+          {list}
+          {bar}
+        </View>
       )}
-
-      {/* Bottom send bar */}
-      {tab === "orders" && !loading && !error ? (
-        <View style={styles.bottomBar}>
-          <TouchableOpacity style={[styles.primaryBtn, !canSend && styles.btnDisabled]} onPress={send} disabled={!canSend}>
-            {sending ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.primaryBtnText}>
-                {running
-                  ? "Bhej rahe hain…"
-                  : !orderInfo.tpl
-                  ? "Pehle template chuniye"
-                  : !orderInfo.ready
-                  ? "Variables bharein"
-                  : `${selectedOrders.length} customers ko message bhejein`}
-              </Text>
-            )}
-          </TouchableOpacity>
-        </View>
-      ) : null}
-
-      {tab === "imported" && !impLoading && !impError && imported.length > 0 ? (
-        <View style={styles.bottomBar}>
-          <TouchableOpacity style={[styles.primaryBtn, !canSendImp && styles.btnDisabled]} onPress={sendImported} disabled={!canSendImp}>
-            {impSending ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.primaryBtnText}>
-                {running
-                  ? "Bhej rahe hain…"
-                  : !importInfo.tpl
-                  ? "Pehle template chuniye"
-                  : !importInfo.ready
-                  ? "Variables bharein"
-                  : `${impSelected.length} contacts ko message bhejein`}
-              </Text>
-            )}
-          </TouchableOpacity>
-        </View>
-      ) : null}
     </View>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+const shadow = {
+  shadowColor: "#0F172A",
+  shadowOpacity: 0.05,
+  shadowRadius: 6,
+  shadowOffset: { width: 0, height: 2 },
+  elevation: 1,
+};
+
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.bg },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, backgroundColor: C.bg },
   bigIcon: { fontSize: 44, marginBottom: 8 },
   centerTitle: { fontSize: 18, fontWeight: "700", color: C.text },
-  list: { padding: 14, paddingBottom: 100 },
-  empty: { textAlign: "center", color: C.sub, marginTop: 30, fontSize: 14 },
 
-  tabBar: {
-    flexDirection: "row",
+  // ── page header + tabs ──
+  pageHeader: {
     backgroundColor: C.card,
     borderBottomWidth: 1,
     borderBottomColor: C.line,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
-  tab: { flex: 1, paddingVertical: 14, alignItems: "center", borderBottomWidth: 3, borderBottomColor: "transparent" },
-  tabOn: { borderBottomColor: C.primary },
-  tabText: { fontSize: 14, fontWeight: "600", color: C.sub },
-  tabTextOn: { color: C.primaryDark, fontWeight: "700" },
-
-  banner: { backgroundColor: "#FEF3C7", padding: 10, borderRadius: 8, marginBottom: 10 },
-  bannerText: { color: "#92400E", fontSize: 13 },
-
-  dateBar: {
+  pageHeaderInner: { width: "100%", maxWidth: 1320, alignSelf: "center", gap: 12 },
+  pageTitle: { fontSize: 20, fontWeight: "800", color: C.text },
+  pageSub: { fontSize: 13, color: C.sub, marginTop: 2 },
+  segment: {
     flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: C.card,
+    backgroundColor: "#EEF2F1",
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: C.line,
-    marginBottom: 12,
+    padding: 4,
+    alignSelf: "stretch",
   },
-  dateArrow: { width: 52, height: 56, alignItems: "center", justifyContent: "center" },
-  dateArrowText: { fontSize: 28, color: C.primaryDark, fontWeight: "700" },
-  dateText: { fontSize: 17, fontWeight: "700", color: C.text },
-  dateSub: { fontSize: 11.5, color: C.sub, marginTop: 1 },
+  segBtn: { flex: 1, paddingVertical: 9, paddingHorizontal: 18, borderRadius: 9, alignItems: "center" },
+  segBtnOn: { backgroundColor: C.primary },
+  segText: { fontSize: 13.5, fontWeight: "600", color: C.sub },
+  segTextOn: { color: "#fff", fontWeight: "700" },
 
+  // ── layout ──
+  bodyWide: {
+    flex: 1,
+    flexDirection: "row",
+    width: "100%",
+    maxWidth: 1320,
+    alignSelf: "center",
+  },
+  side: { width: 410, flexGrow: 0, flexShrink: 0 },
+  sideContent: { padding: 16, paddingRight: 8, paddingBottom: 40 },
+  main: { flex: 1, minWidth: 0 },
+  list: { padding: 16, paddingBottom: 110 },
+
+  // ── cards ──
   card: {
     backgroundColor: C.card,
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 14,
+    padding: 16,
     marginBottom: 12,
     borderWidth: 1,
     borderColor: C.line,
+    ...shadow,
   },
-  cardTitle: { fontSize: 15, fontWeight: "700", color: C.text, flexShrink: 1 },
-  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  muted: { fontSize: 13, color: C.sub, lineHeight: 19 },
-  link: { color: C.primary, fontSize: 13, fontWeight: "700" },
+  cardHead: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
+  cardTitle: { fontSize: 15.5, fontWeight: "700", color: C.text, flexShrink: 1 },
+  eyebrow: { fontSize: 10.5, fontWeight: "800", color: C.primary, letterSpacing: 1, marginBottom: 6 },
+  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 8 },
+  muted: { fontSize: 12.5, color: C.sub, lineHeight: 18 },
   errorText: { fontSize: 13, color: C.danger, marginTop: 4 },
   warnText: { fontSize: 12, color: C.warn, marginTop: 6 },
-  label: { fontSize: 13, fontWeight: "700", color: C.text, marginBottom: 8 },
-  varLabel: { fontSize: 13, fontWeight: "700", color: C.primaryDark, marginBottom: 4 },
+  label: { fontSize: 12.5, fontWeight: "700", color: C.text, marginBottom: 8 },
 
-  tplItem: { borderWidth: 1, borderColor: C.line, borderRadius: 10, padding: 12, marginTop: 10 },
-  tplItemOn: { borderColor: C.primary, borderWidth: 2 },
-  tplName: { fontSize: 14.5, fontWeight: "700", color: C.text, flexShrink: 1 },
-  tplBody: { fontSize: 13.5, color: C.text, marginTop: 6, lineHeight: 19 },
+  banner: { backgroundColor: "#FEF3C7", padding: 10, borderRadius: 10, marginBottom: 12 },
+  bannerText: { color: "#92400E", fontSize: 13 },
+
+  // ── date ──
+  dateRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
+  dateArrow: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: C.line,
+    backgroundColor: C.soft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dateArrowText: { fontSize: 22, color: C.primaryDark, fontWeight: "700", marginTop: -2 },
+  dateText: { fontSize: 16, fontWeight: "800", color: C.text },
+  dateSub: { fontSize: 11.5, color: C.sub, marginTop: 1 },
+  todayBtn: {
+    alignSelf: "center",
+    marginTop: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: C.primarySoft,
+  },
+  todayBtnText: { color: C.primaryDark, fontSize: 12.5, fontWeight: "700" },
+
+  // ── chips ──
+  chipWrap: { flexDirection: "row", flexWrap: "wrap", marginTop: 2 },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: C.line,
+    backgroundColor: C.card,
+    borderRadius: 20,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  chipOn: { backgroundColor: C.primary, borderColor: C.primary },
+  chipText: { fontSize: 13, color: C.text, fontWeight: "600" },
+  chipTextOn: { color: "#fff", fontWeight: "700" },
+  chipCount: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    color: C.sub,
+    backgroundColor: "#EEF2F1",
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  chipCountOn: { color: C.primaryDark, backgroundColor: "#fff" },
+
+  // ── template picker ──
+  ghostBtn: {
+    borderWidth: 1,
+    borderColor: C.primary,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  ghostBtnText: { color: C.primary, fontSize: 12.5, fontWeight: "700" },
+  selRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    backgroundColor: C.primarySoft,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 8,
+  },
+  selName: { fontSize: 14, fontWeight: "700", color: C.primaryDark, flex: 1 },
+  tplItem: {
+    flexDirection: "row",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 10,
+  },
+  tplItemOn: { borderColor: C.primary, borderWidth: 2, backgroundColor: "#F6FCFB" },
+  tplName: { fontSize: 14, fontWeight: "700", color: C.text, flexShrink: 1 },
+  tplBody: { fontSize: 13, color: C.sub, marginTop: 5, lineHeight: 19 },
+  radio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: C.line,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
+  radioOn: { borderColor: C.primary },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.primary },
   pill: {
-    fontSize: 11,
+    fontSize: 10.5,
+    fontWeight: "700",
     color: C.primaryDark,
-    backgroundColor: "#DCF8C6",
+    backgroundColor: "#D6F0E9",
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 10,
     overflow: "hidden",
   },
+  chatBg: { backgroundColor: "#ECE5DD", borderRadius: 12, padding: 12 },
+  bubble: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderTopLeftRadius: 2,
+    paddingHorizontal: 12,
+    paddingTop: 9,
+    paddingBottom: 6,
+  },
+  bubbleText: { fontSize: 13.5, color: "#111", lineHeight: 19 },
+  bubbleTime: { fontSize: 10.5, color: "#8696A0", textAlign: "right", marginTop: 3 },
+  varBox: {
+    backgroundColor: C.soft,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 12,
+    padding: 10,
+    marginTop: 8,
+  },
+  varLabel: { fontSize: 12.5, fontWeight: "800", color: C.primaryDark, marginBottom: 6 },
+  tokenChip: {
+    borderWidth: 1,
+    borderColor: C.primary,
+    borderRadius: 16,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    marginRight: 8,
+    backgroundColor: "#fff",
+  },
+  tokenText: { fontSize: 12, color: C.primaryDark, fontWeight: "600" },
 
   input: {
-    backgroundColor: C.card,
+    backgroundColor: "#fff",
     borderWidth: 1,
     borderColor: C.line,
     borderRadius: 10,
@@ -1091,73 +1422,112 @@ const styles = StyleSheet.create({
     color: C.text,
     marginBottom: 8,
   },
-  tokenChip: {
-    borderWidth: 1,
-    borderColor: C.primary,
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginRight: 8,
-    backgroundColor: "#F0FDF9",
+  searchInput: { marginTop: 4, marginBottom: 10 },
+
+  // ── progress ──
+  progressTrack: { height: 7, backgroundColor: C.line, borderRadius: 4, marginVertical: 10, overflow: "hidden" },
+  progressFill: { height: 7, borderRadius: 4 },
+
+  // ── import drop zone ──
+  dropZone: {
+    marginTop: 12,
+    borderWidth: 2,
+    borderStyle: "dashed",
+    borderColor: "#9ED8CC",
+    backgroundColor: "#F4FBF9",
+    borderRadius: 14,
+    paddingVertical: 26,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  tokenText: { fontSize: 12.5, color: C.primaryDark, fontWeight: "600" },
+  dropIcon: { fontSize: 26, color: C.primary, marginBottom: 6 },
+  dropTitle: { fontSize: 14.5, fontWeight: "700", color: C.primaryDark },
+  dropHint: { fontSize: 12, color: C.sub, marginTop: 3 },
 
-  bubble: { backgroundColor: "#DCF8C6", borderRadius: 12, borderTopLeftRadius: 2, padding: 12, marginVertical: 10 },
-  bubbleText: { fontSize: 14, color: "#111", lineHeight: 20 },
-
-  progressTrack: { height: 6, backgroundColor: C.line, borderRadius: 3, marginVertical: 10, overflow: "hidden" },
-  progressFill: { height: 6, borderRadius: 3 },
-
-  sectionTitle: { fontSize: 15, fontWeight: "700", color: C.text, marginTop: 4, marginBottom: 8 },
-  chip: {
+  // ── stats ──
+  statRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  stat: {
+    flex: 1,
+    backgroundColor: C.card,
     borderWidth: 1,
     borderColor: C.line,
-    backgroundColor: C.card,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    marginRight: 8,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    ...shadow,
   },
-  chipOn: { backgroundColor: C.primary, borderColor: C.primary },
-  chipText: { fontSize: 13, color: C.text },
-  chipTextOn: { color: "#fff", fontWeight: "700" },
+  statValue: { fontSize: 20, fontWeight: "800" },
+  statLabel: { fontSize: 11, color: C.sub, marginTop: 2, fontWeight: "600" },
 
-  selectAll: { flexDirection: "row", alignItems: "center", paddingVertical: 10 },
-  selectAllText: { marginLeft: 12, fontSize: 13.5, color: C.text, fontWeight: "600", flexShrink: 1 },
-
+  // ── select all / actions ──
+  selectAll: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: C.card,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginBottom: 10,
+  },
+  selectAllText: { fontSize: 13.5, color: C.text, fontWeight: "700", flexShrink: 1 },
   actionRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
-  outlineBtn: {
+  dangerBtn: {
     flex: 1,
     borderWidth: 1.5,
     borderColor: "#FECACA",
-    backgroundColor: "#FEF2F2",
+    backgroundColor: C.dangerSoft,
     borderRadius: 10,
     paddingVertical: 10,
     alignItems: "center",
   },
-  dangerText: { color: C.danger, fontSize: 13, fontWeight: "700" },
+  dangerText: { color: C.danger, fontSize: 12.5, fontWeight: "700" },
 
+  // ── order rows ──
   orderCard: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
+    gap: 12,
     backgroundColor: C.card,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 12,
     marginBottom: 8,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: C.line,
   },
-  orderName: { fontSize: 15, fontWeight: "700", color: C.text, flexShrink: 1, marginRight: 8 },
-  orderNo: { fontSize: 12.5, color: C.sub },
-  sentText: { fontSize: 12.5, color: C.ok, fontWeight: "700", marginTop: 3 },
-  failText: { fontSize: 12, color: C.danger, marginTop: 3 },
+  orderCardOn: { borderColor: "#7CCBBC", backgroundColor: "#F6FCFB" },
+  avatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: C.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: { fontSize: 15, fontWeight: "800", color: C.primaryDark },
+  orderName: { fontSize: 14.5, fontWeight: "700", color: C.text, flexShrink: 1 },
+  orderNo: { fontSize: 12, color: C.sub, fontWeight: "600" },
+  orderPhone: { fontSize: 13, color: C.sub, marginTop: 2 },
+  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 7 },
+  metaChip: { backgroundColor: "#EEF2F1", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
+  metaText: { fontSize: 11.5, color: "#475569", fontWeight: "600" },
+  badge: { alignSelf: "flex-start", borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4, marginTop: 7 },
+  badgeText: { fontSize: 11.5, fontWeight: "700" },
 
+  emptyBox: { alignItems: "center", paddingVertical: 40 },
+  emptyIcon: { fontSize: 34, marginBottom: 8 },
+  empty: { textAlign: "center", color: C.sub, fontSize: 14 },
+
+  // ── checkbox ──
   box: {
     width: 24,
     height: 24,
-    borderRadius: 6,
+    borderRadius: 7,
     borderWidth: 2,
-    borderColor: C.sub,
+    borderColor: "#94A3B8",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: C.card,
@@ -1166,24 +1536,29 @@ const styles = StyleSheet.create({
   boxOff: { borderColor: C.line, backgroundColor: C.line },
   tick: { color: "#fff", fontSize: 15, fontWeight: "800", marginTop: -1 },
 
+  // ── buttons / send bar ──
   primaryBtn: {
     backgroundColor: C.primary,
     borderRadius: 12,
     paddingVertical: 14,
+    paddingHorizontal: 20,
     alignItems: "center",
     justifyContent: "center",
   },
   primaryBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
   btnDisabled: { opacity: 0.45 },
-
   bottomBar: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    padding: 14,
-    backgroundColor: C.card,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: "rgba(255,255,255,0.97)",
     borderTopWidth: 1,
     borderTopColor: C.line,
   },
+  bottomInner: { flexDirection: "row", alignItems: "center", gap: 14 },
+  bottomSummary: { flex: 1, fontSize: 13.5, color: C.sub, fontWeight: "600" },
+  sendBtn: { flex: 1, minWidth: 220 },
 });
