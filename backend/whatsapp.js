@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// MIGME — whatsapp.js
+// Retro — whatsapp.js
 // WhatsApp Business Cloud API (Meta) — multi-restaurant
 //   1. Har restaurant ka apna number (phoneNumberId + token) -> clients/{id}.whatsapp
 //   2. Bulk / customized messages (approved TEMPLATES) -> campaigns
@@ -19,7 +19,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 const crypto = require("crypto");
 const {
-  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, query, where,
+  collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, query, where, writeBatch,
 } = require("firebase/firestore");
 
 module.exports = function registerWhatsApp(app, deps) {
@@ -421,6 +421,32 @@ module.exports = function registerWhatsApp(app, deps) {
     return out || "-";
   }
 
+    // Send ke time chuna gaya template check karo (approved? variables sahi? tokens allowed?)
+  // allowedTokens: null = saare TOKENS chalenge, array = sirf wahi
+  async function resolveSendTemplate(cfg, t, allowedTokens = null) {
+    const templateName = String((t && t.templateName) || "").trim();
+    if (!templateName) return { error: "Template chuniye" };
+    const variables = (Array.isArray(t.variables) ? t.variables : []).map((x) => String(x)).slice(0, 10);
+    for (const v of variables) {
+      for (const m of v.matchAll(/\{\{(\w+)\}\}/g)) {
+        if (!TOKENS[m[1]] || (allowedTokens && !allowedTokens.includes(m[1])))
+          return { error: `{{${m[1]}}} is list ke liye available nahi hai` };
+      }
+    }
+    let info;
+    try {
+      info = await inspectTemplate(cfg, templateName, String(t.language || "").trim());
+    } catch (e) {
+      return { error: `Meta se template check nahi hua: ${e.message}` };
+    }
+    if (info.error) return { error: info.error };
+    if (info.headerFormat) return { error: "PDF/photo header wale templates yahan support nahi hain" };
+    if (variables.length !== info.varCount)
+      return { error: `Template mein ${info.varCount} variable hain, aapne ${variables.length} bhare` };
+    if (variables.some((v) => !v.trim())) return { error: "Har variable ke liye value chuniye" };
+    return { om: { templateName, language: info.language, variables } };
+  }
+
   // Ek baar template set karo (har baar nahi)
   // body: { templateName, language, variables:["{{name}}","{{trainInfo}}"] }
   app.put("/api/whatsapp/clients/:clientId/order-message-settings", rateLimit(20), requireClientOrAdmin, async (req, res) => {
@@ -480,7 +506,7 @@ module.exports = function registerWhatsApp(app, deps) {
   app.post("/api/whatsapp/clients/:clientId/order-messages", rateLimit(5), requireClientOrAdmin, async (req, res) => {
     try {
       const { clientId } = req.params;
-      const { orderNos, force = false, vendor = "", date = "" } = req.body;
+            const { orderNos, force = false, vendor = "", date = "", template } = req.body;
       if (!Array.isArray(orderNos) || orderNos.length === 0)
         return res.status(400).json({ error: "orderNos required" });
       if (orderNos.length > 500)
@@ -488,9 +514,16 @@ module.exports = function registerWhatsApp(app, deps) {
 
       const cfg = await getWaConfig(clientId);
       if (!cfg) return res.status(400).json({ error: "WhatsApp connect nahi hai" });
-      const clientSnap = await getDoc(doc(db, "clients", clientId));
-      const om = clientSnap.data()?.whatsapp?.orderMessage;
-      if (!om?.templateName) return res.status(400).json({ error: "Pehle template set karein" });
+            let om;
+      if (template) {
+        const t = await resolveSendTemplate(cfg, template);
+        if (t.error) return res.status(400).json({ error: t.error });
+        om = t.om;
+      } else {
+        const clientSnap = await getDoc(doc(db, "clients", clientId));
+        om = clientSnap.data()?.whatsapp?.orderMessage;
+        if (!om?.templateName) return res.status(400).json({ error: "Template chuniye" });
+      }
 
       const skipped = { noPhone: 0, alreadySent: 0, optedOut: 0, duplicatePhone: 0, notFound: 0 };
       const jobs = [];
@@ -575,6 +608,201 @@ module.exports = function registerWhatsApp(app, deps) {
       completedAt: new Date().toISOString(),
     }).catch(() => {});
     log(`[WA ${clientId}] order messages ${campaignId} done — sent ${sent}, failed ${failed}`);
+  }
+
+    // ── 7b. IMPORTED LIST (Excel se: Order ID + Phone) ────────────────────────
+  // Collection: wa_imported, doc id = {clientId}_{orderNo}
+  // Dobara import karne par same orderNo update hota hai (sent history bachi rehti hai)
+  const MAX_IMPORT_ROWS = 5000;
+  const IMPORT_TOKENS = ["name", "orderNo"]; // list mein sirf yehi 2 cheezein hoti hain
+  const cleanOrderNo = (v) => String(v ?? "").trim().replace(/\//g, "-").slice(0, 60);
+
+  // body: { rows:[{orderNo, phone, name?}] }
+  app.post("/api/whatsapp/clients/:clientId/imported/import", rateLimit(10), requireClientOrAdmin, async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
+      if (rows.length === 0) return res.status(400).json({ error: "rows required" });
+      if (rows.length > MAX_IMPORT_ROWS)
+        return res.status(400).json({ error: `Ek baar mein max ${MAX_IMPORT_ROWS} rows` });
+
+      const skipped = { noOrderNo: 0, badPhone: 0, duplicateInFile: 0 };
+      const seen = new Set();
+      const valid = [];
+      for (const r of rows) {
+        const orderNo = cleanOrderNo(r.orderNo);
+        if (!orderNo) { skipped.noOrderNo++; continue; }
+        const phone = normPhone(r.phone);
+        if (!phone) { skipped.badPhone++; continue; }
+        if (seen.has(orderNo)) { skipped.duplicateInFile++; continue; }
+        seen.add(orderNo);
+        valid.push({ orderNo, phone, name: String(r.name || "").trim().slice(0, 80) });
+      }
+
+      const now = new Date().toISOString();
+      for (let i = 0; i < valid.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const v of valid.slice(i, i + 400)) {
+          batch.set(
+            doc(db, "wa_imported", `${clientId}_${v.orderNo}`),
+            { clientId, orderNo: v.orderNo, phone: v.phone, name: v.name, importedAt: now },
+            { merge: true },
+          );
+        }
+        await batch.commit();
+      }
+      log(`[WA ${clientId}] imported ${valid.length} rows`);
+      res.json({ saved: valid.length, skipped });
+    } catch (e) {
+      warn(`WA import error: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/whatsapp/clients/:clientId/imported", rateLimit(30), requireClientOrAdmin, async (req, res) => {
+    try {
+      const snap = await getDocs(query(collection(db, "wa_imported"), where("clientId", "==", req.params.clientId)));
+      const rows = snap.docs.map((d) => {
+        const x = d.data();
+        return {
+          orderNo: x.orderNo, phone: x.phone, name: x.name || "",
+          importedAt: x.importedAt || "",
+          waMessage: x.waMessage || null,
+          waMessageError: x.waMessageError || "",
+        };
+      }).sort((a, b) => (b.importedAt || "").localeCompare(a.importedAt || "") || String(a.orderNo).localeCompare(String(b.orderNo)));
+      res.json(rows);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // body: { orderNos:[...] }  YA  { all:true }
+  app.post("/api/whatsapp/clients/:clientId/imported/delete", rateLimit(10), requireClientOrAdmin, async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      let ids;
+      if (req.body.all === true) {
+        const snap = await getDocs(query(collection(db, "wa_imported"), where("clientId", "==", clientId)));
+        ids = snap.docs.map((d) => d.id);
+      } else if (Array.isArray(req.body.orderNos) && req.body.orderNos.length) {
+        ids = req.body.orderNos.slice(0, MAX_IMPORT_ROWS).map((n) => `${clientId}_${cleanOrderNo(n)}`);
+      } else {
+        return res.status(400).json({ error: "orderNos ya all required" });
+      }
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = writeBatch(db);
+        ids.slice(i, i + 400).forEach((id) => batch.delete(doc(db, "wa_imported", id)));
+        await batch.commit();
+      }
+      res.json({ deleted: ids.length });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // body: { orderNos:[...], template:{templateName, language, variables}, force:false }
+  app.post("/api/whatsapp/clients/:clientId/imported/send", rateLimit(5), requireClientOrAdmin, async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      const { orderNos, template, force = false } = req.body;
+      if (!Array.isArray(orderNos) || orderNos.length === 0)
+        return res.status(400).json({ error: "orderNos required" });
+      if (orderNos.length > MAX_RECIPIENTS)
+        return res.status(400).json({ error: `Ek baar mein max ${MAX_RECIPIENTS} contacts` });
+
+      const cfg = await getWaConfig(clientId);
+      if (!cfg) return res.status(400).json({ error: "WhatsApp connect nahi hai" });
+      const t = await resolveSendTemplate(cfg, template, IMPORT_TOKENS);
+      if (t.error) return res.status(400).json({ error: t.error });
+
+      // Ek hi baar mein saari list + opt-out list padh lo (2000 alag reads nahi)
+      const snap = await getDocs(query(collection(db, "wa_imported"), where("clientId", "==", clientId)));
+      const byNo = new Map(snap.docs.map((d) => [d.data().orderNo, d.data()]));
+      const optSnap = await getDocs(query(
+        collection(db, "wa_customers"),
+        where("clientId", "==", clientId),
+        where("optIn", "==", false),
+      ));
+      const optedOut = new Set(optSnap.docs.map((d) => d.data().phone));
+
+      const skipped = { alreadySent: 0, optedOut: 0, duplicatePhone: 0, notFound: 0 };
+      const seenPhones = new Set();
+      const jobs = [];
+      for (const n of orderNos) {
+        const x = byNo.get(cleanOrderNo(n));
+        if (!x) { skipped.notFound++; continue; }
+        if (x.waMessage?.sentAt && !force) { skipped.alreadySent++; continue; }
+        if (optedOut.has(x.phone)) { skipped.optedOut++; continue; }
+        if (seenPhones.has(x.phone)) { skipped.duplicatePhone++; continue; }
+        seenPhones.add(x.phone);
+        jobs.push({ orderNo: x.orderNo, phone: x.phone, name: x.name || "" });
+      }
+      if (jobs.length === 0)
+        return res.status(400).json({ error: "Bhejne layak koi contact nahi mila", skipped });
+
+      const ref = await addDoc(collection(db, "wa_campaigns"), {
+        clientId, kind: "imported", templateName: t.om.templateName, language: t.om.language,
+        total: jobs.length, sent: 0, failed: 0,
+        status: "running", createdAt: new Date().toISOString(),
+      });
+      runImportedMessages(ref.id, clientId, cfg, t.om, jobs)
+        .catch((e) => err(`Imported messages ${ref.id} crashed: ${e.message}`));
+      res.json({ campaignId: ref.id, queued: jobs.length, skipped });
+    } catch (e) {
+      warn(`WA imported-send error: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  async function runImportedMessages(campaignId, clientId, cfg, om, jobs) {
+    let sent = 0, failed = 0, consecutiveFail = 0, lastError = "";
+    const cRef = doc(db, "wa_campaigns", campaignId);
+    for (const job of jobs) {
+      const fake = { customerName: job.name, orderNo: job.orderNo };
+      const params = (om.variables || []).map((v) => ({ type: "text", text: fillTokens(v, fake) }));
+      const rowRef = doc(db, "wa_imported", `${clientId}_${job.orderNo}`);
+      try {
+        const r = await meta(`/${cfg.phoneNumberId}/messages`, cfg.token, "POST", {
+          messaging_product: "whatsapp",
+          to: job.phone,
+          type: "template",
+          template: {
+            name: om.templateName,
+            language: { code: om.language || "en" },
+            ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}),
+          },
+        });
+        const wamid = r.messages?.[0]?.id || "";
+        sent++; consecutiveFail = 0;
+        await updateDoc(rowRef, {
+          waMessage: { templateName: om.templateName, sentAt: new Date().toISOString(), wamid },
+          waMessageError: "",
+        }).catch(() => {});
+        if (wamid) {
+          await setDoc(doc(db, "wa_outbound", wamid), {
+            clientId, campaignId, orderNo: job.orderNo, phone: job.phone,
+            status: "sent", at: new Date().toISOString(),
+          }).catch(() => {});
+        }
+      } catch (e) {
+        failed++; consecutiveFail++; lastError = e.message;
+        warn(`[WA ${clientId}] imported #${job.orderNo} message failed: ${e.message}`);
+        await updateDoc(rowRef, { waMessageError: e.message }).catch(() => {});
+        if (consecutiveFail >= 10) {
+          await updateDoc(cRef, { status: "aborted", sent, failed, error: e.message }).catch(() => {});
+          return;
+        }
+      }
+      if ((sent + failed) % 10 === 0) await updateDoc(cRef, { sent, failed }).catch(() => {});
+      await delay(SEND_GAP_MS);
+    }
+    await updateDoc(cRef, {
+      status: "completed", sent, failed,
+      ...(lastError ? { error: lastError } : {}),
+      completedAt: new Date().toISOString(),
+    }).catch(() => {});
+    log(`[WA ${clientId}] imported messages ${campaignId} done — sent ${sent}, failed ${failed}`);
   }
 
   // ── 6. AUTO MESSAGES ─────────────────────────────────────────────────────
