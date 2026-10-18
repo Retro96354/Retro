@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// MIGME BACKEND — backend.js
+// RETRO BACKEND — backend.js
 // ═══════════════════════════════════════════════════════════════════════════
 require("dotenv").config({
   path: require("path").join(__dirname, "..", ".env"),
@@ -191,7 +191,7 @@ const firebaseConfig = {
   messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
-const firebaseApp = initializeApp(firebaseConfig, "migme-backend");
+const firebaseApp = initializeApp(firebaseConfig, "retro-backend");
 const db = getFirestore(firebaseApp);
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -231,12 +231,12 @@ const backendAuthReady = (async function authBackend() {
   } catch {
     await authAdmin.createUser({
       uid: BACKEND_AUTH_UID,
-      email: "backend@migme.internal",
+      email: "backend@retro.internal",
       password: crypto.randomBytes(24).toString("hex"),
     });
   }
   const token = await authAdmin.createCustomToken(BACKEND_AUTH_UID, {
-    email: "backend@migme.internal",
+    email: "backend@retro.internal",
   });
   const authInstance = getAuth(firebaseApp);
   await signInWithCustomToken(authInstance, token);
@@ -319,11 +319,11 @@ function maskKey(key) {
 function safeCompareKey(provided, secret) {
   if (!provided || !secret) return false;
   const hmacA = crypto
-    .createHmac("sha256", "migme-key-cmp")
+    .createHmac("sha256", "retro-key-cmp")
     .update(provided)
     .digest();
   const hmacB = crypto
-    .createHmac("sha256", "migme-key-cmp")
+    .createHmac("sha256", "retro-key-cmp")
     .update(secret)
     .digest();
   return crypto.timingSafeEqual(hmacA, hmacB);
@@ -563,8 +563,7 @@ app.use(
 );
 
 const ALLOWED_ORIGINS = (
-  process.env.CORS_ORIGINS ||
-  "http://localhost:8081,http://localhost:19006,https://migme.onrender.com"
+  process.env.CORS_ORIGINS 
 )
   .split(",")
   .map((o) => o.trim());
@@ -591,7 +590,7 @@ app.get("/", (_req, res) => {
       emailCount += set.size;
   }
   res.send(
-    `MIGME Backend ✅ | Date: ${today}` +
+    `RETRO Backend ✅ | Date: ${today}` +
       ` | Orders in cache: ${orderCount}` +
       ` | Emails processed today: ${emailCount}` +
       ` | Active pollers: ${globalStopFns.size}`,
@@ -864,7 +863,7 @@ app.delete("/api/data/client/:clientId/all", requireAdmin, async (req, res) => {
       await deleteDoc(doc(db, "executives", d.id));
       total++;
     }
-    for (const col of ["wa_customers", "wa_campaigns", "wa_messages", "wa_outbound"]) {
+    for (const col of ["wa_customers", "wa_campaigns", "wa_messages", "wa_outbound", "wa_imported"]) {
       const waSnap = await getDocs(query(collection(db, col), where("clientId", "==", clientId)));
       for (const d of waSnap.docs) {
         await deleteDoc(doc(db, col, d.id));
@@ -879,7 +878,7 @@ app.delete("/api/data/client/:clientId/all", requireAdmin, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => log(`MIGME Backend running on port ${PORT}`));
+app.listen(PORT, () => log(`RETRO Backend running on port ${PORT}`));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PDF PARSE
@@ -3080,7 +3079,7 @@ async function pollClientInbox(
 // ═══════════════════════════════════════════════════════════════════════════
 async function watchClients() {
   await backendAuthReady;
-  log("MIGME: Watching for active clients...");
+  log("RETRO: Watching for active clients...");
 
   const activePolls = new Map();
 
