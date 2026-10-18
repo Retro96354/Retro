@@ -142,8 +142,16 @@ export function confirmAsync(title, message, confirmText = "Haan, bhejein") {
 export const getOrdersByDate = (date) => request(`/orders?date=${encodeURIComponent(date)}`);
 export const saveOrderMessageSettings = ({ templateName, language, variables }) =>
   request("/order-message-settings", { method: "PUT", body: { templateName, language, variables } });
-export const sendOrderMessages = ({ orderNos, force, vendor, date }) =>
-  request("/order-messages", { method: "POST", body: { orderNos, force, vendor, date } });
+export const sendOrderMessages = ({ orderNos, force, vendor, date, template }) =>
+  request("/order-messages", { method: "POST", body: { orderNos, force, vendor, date, template } });
+// ── Imported list (Excel se: Order ID + Phone) ──────────────────────────────
+export const getImportedContacts = () => request("/imported");
+export const importContacts = (rows) =>
+  request("/imported/import", { method: "POST", body: { rows } });
+export const deleteImported = ({ orderNos, all }) =>
+  request("/imported/delete", { method: "POST", body: { orderNos, all } });
+export const sendImportedMessages = ({ orderNos, template, force }) =>
+  request("/imported/send", { method: "POST", body: { orderNos, template, force } });
 
 // Meta template ko samajhna: body text, variables, aur kya support hai
 // allowMediaHeader: true -> PDF/photo header wale templates bhi "supported" (auto messages ke liye)
