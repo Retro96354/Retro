@@ -612,22 +612,7 @@ autoPrintRef.current = autoPrint;
     Object.values(autoTimersRef.current).forEach(clearTimeout);
     autoTimersRef.current = {};
   }
-
-  const handleWaSilentToggle = async () => {
-  const next = !waSilent;
-  setWaSilent(next);
-  try {
-    await updateDoc(doc(db, 'clients', clientId), { waSilentOnPrint: next });
-  } catch (e) {
-    setWaSilent(!next);
-    showWaNotice('Setting save nahi hui: ' + e.message);
-  }}
 };
-
-// ── WhatsApp silent mode (Firestore me save hota hai) ──
-const [waSilent, setWaSilent] = useState(false);
-const waSilentRef = useRef(false);
-waSilentRef.current = waSilent;
 
 // Sirf refs use karta hai, isliye snapshot ke andar se safely call ho sakta hai
 const scheduleAutoPrint = (orderId) => {
@@ -667,10 +652,7 @@ useEffect(() => () => {
   useEffect(() => {
     if (!clientId) return;
     const unsub = onSnapshot(doc(db, 'clients', clientId), (snap) => {
-      if (snap.exists()) {
-       setAlertSound(snap.data().alertSound || SOUND_OPTIONS[0].url);
-       setWaSilent(snap.data().waSilentOnPrint === true);
-      }
+      if (snap.exists()) setAlertSound(snap.data().alertSound || SOUND_OPTIONS[0].url);
     });
     return () => unsub();
   }, [clientId]);
@@ -913,25 +895,22 @@ useEffect(() => () => {
         iframe.contentDocument.close();
 
         const doPrint = () => {
-           iframe.contentWindow.focus();
-           iframe.contentWindow.print();
-        setPrintedOrders(prev => new Set([...prev, order.id]));
-        updateDoc(doc(db, 'orders', order.id), { status: 'Completed' }).catch(() => {});
-
-        // WhatsApp: silent mode ON ho to kuch bhi mat bhejo
-        if (!waSilentRef.current) {
-        const waOrderNo = order.id && order.id.startsWith(`${clientId}_`)
-           ? order.id.slice(clientId.length + 1)
-           : order.orderNo;
-        notifyOrderPrinted(waOrderNo).then((res) => {
-        if (res && res.print === 'failed') {
-        showWaNotice(`Order #${order.orderNo}: WhatsApp message nahi gaya — ${res.error || 'error'}`);
-        }
-    });
-  }
-
-  setTimeout(() => { document.body.removeChild(iframe); }, 1000);
-};
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+          setPrintedOrders(prev => new Set([...prev, order.id]));
+          updateDoc(doc(db, 'orders', order.id), { status: 'Completed' }).catch(() => {});
+         // WhatsApp: backend ko batao ki order print hua
+          const waOrderNo = order.id && order.id.startsWith(`${clientId}_`)
+            ? order.id.slice(clientId.length + 1)
+            : order.orderNo;
+          notifyOrderPrinted(waOrderNo);
+          notifyOrderPrinted(waOrderNo).then((res) => {
+          if (res && res.print === 'failed') {
+              showWaNotice(`Order #${order.orderNo}: WhatsApp message nahi gaya — ${res.error || 'error'}`);
+            }
+          });
+          setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+        };
 
         setTimeout(() => {
           const img = iframe.contentDocument.getElementById('qrImg');
@@ -1033,21 +1012,6 @@ useEffect(() => () => {
 
         {/* Buttons row: Auto Print + Today Only */}
         <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
-
-        <TouchableOpacity
-          style={[styles.todayBtn, waSilent && styles.waSilentBtnActive]}
-          onPress={handleWaSilentToggle}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-           name={waSilent ? 'volume-mute' : 'logo-whatsapp'}
-           size={15}
-           color={waSilent ? '#ffffff' : '#0f172a'}
-          />
-             <Text style={[styles.todayBtnText, waSilent && styles.todayBtnTextActive]}>
-              {waSilent ? 'WhatsApp OFF' : 'WhatsApp ON'}
-             </Text>
-        </TouchableOpacity>
 
           {/* ✅ NEW: Auto Print toggle button */}
           <TouchableOpacity
@@ -1205,7 +1169,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#22c55e', marginLeft: 2,
   },
   autoPrintBtnActive: { backgroundColor: '#16a34a', borderColor: '#16a34a' },
-  waSilentBtnActive: { backgroundColor: '#dc2626', borderColor: '#dc2626' },
   waNotice: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a',
