@@ -877,8 +877,7 @@ useEffect(() => () => {
   </head>
   <body>
 
-    <div class="center bold" style="font-size:16px;margin-bottom:2px;">${clientBusinessName}</div>
-    <div class="center" style="font-size:11px;">${clientAddress}</div>
+    <div class="center bold" style="font-size:18px;margin-bottom:2px;">${clientBusinessName}</div>
     <hr class="divider"/>
     <table class="detail-table">
       <tr><td>Order No.</td><td>${order.orderNo || order.pnr || 'N/A'}</td></tr>
