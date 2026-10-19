@@ -1069,6 +1069,10 @@ module.exports = function registerWhatsApp(app, deps) {
     try {
       const clientSnap = await getDoc(doc(db, "clients", clientId));
       const wa = (clientSnap.exists() && clientSnap.data().whatsapp) || {};
+      // 👇 NEW: silent mode ON ho to na print message, na review timer
+        if (clientSnap.exists() && clientSnap.data().waSilentOnPrint === true) {
+        return { skipped: "silent_mode" };
+      }
       const am = wa.autoMessages;
       if (!wa.enabled || !am || !am.enabled) return { skipped: "auto_messages_off" };
       const cfg = await getWaConfig(clientId);
