@@ -278,20 +278,88 @@ export default function MenuScreen({ clientId }) {
       });
     }
 
+    
     // Menu Items sheet
     const itemSheet = wb.Sheets['Menu Items'];
     const parsedItems = [];
+
     if (itemSheet) {
-      const rows = XLSX.utils.sheet_to_json(itemSheet, { header: 1, defval: '' });
-      rows.slice(1).forEach(r => {
-        const name     = String(r[0] || '').trim();
-        const catName  = String(r[1] || '').trim();
-        const price    = parseFloat(r[2]);
-        const vegRaw   = String(r[3] || '').trim().toLowerCase();
-        if (!name || !catName || isNaN(price)) return;
-        if (String(name).startsWith('⚠')) return;
-        parsedItems.push({ name, categoryName: catName, price, isVeg: vegRaw !== 'nonveg' });
+      const rows = XLSX.utils.sheet_to_json(itemSheet, {
+        header: 1,
+        defval: '',
       });
+
+      if (rows.length > 1) {
+        const headers = rows[0].map(value =>
+          String(value || '').trim().toLowerCase()
+        );
+
+        const nameIndex = headers.findIndex(
+          h => h === 'item name' || h === 'name'
+        );
+        const categoryIndex = headers.findIndex(
+          h => h === 'category' || h === 'category name'
+        );
+        const priceIndex = headers.findIndex(
+          h => h.startsWith('price')
+        );
+        const typeIndex = headers.findIndex(h => h === 'type');
+
+        const hasHeaders =
+          nameIndex !== -1 &&
+          categoryIndex !== -1 &&
+          priceIndex !== -1;
+
+        const indexes = hasHeaders
+          ? {
+              name: nameIndex,
+              category: categoryIndex,
+              price: priceIndex,
+              type: typeIndex,
+            }
+          : {
+              name: 0,
+              category: 1,
+              price: 2,
+              type: 3,
+            };
+
+        rows.slice(1).forEach(row => {
+          const name = String(row[indexes.name] ?? '').trim();
+          const categoryName = String(
+            row[indexes.category] ?? ''
+          ).trim();
+
+          const rawPrice = row[indexes.price];
+          const price = Number(
+            typeof rawPrice === 'string'
+              ? rawPrice.replace(/[₹,\s]/g, '')
+              : rawPrice
+          );
+
+          const type = String(
+            indexes.type === -1
+              ? 'Veg'
+              : row[indexes.type] ?? 'Veg'
+          ).trim().toLowerCase().replace(/[\s-]/g, '');
+
+          if (
+            !name ||
+            !categoryName ||
+            !Number.isFinite(price) ||
+            name.startsWith('⚠')
+          ) {
+            return;
+          }
+
+          parsedItems.push({
+            name,
+            categoryName,
+            price,
+            isVeg: !['nonveg', 'nonvegetarian'].includes(type),
+          });
+        });
+      }
     }
 
     if (parsedCats.length === 0 && parsedItems.length === 0) {
