@@ -1034,6 +1034,43 @@ async function markEmailAsRead(connection, uid) {
   }
 }
 
+// ═══ STATION / OUTLET HELPERS ═══
+const STATION_ALIASES = {
+  // agar do naam ek hi outlet ke hain to yahan likho, e.g. "merta": "merta-road"
+};
+
+// "Merta Road Jn/ MTD" | "MERTA ROAD JN" | "MERTA ROAD (MTD)" → { station:"Merta Road", stationKey:"merta-road" }
+function normalizeStation(raw) {
+  if (!raw) return { station: "", stationKey: "" };
+  let s = String(raw).split("/")[0]
+    .replace(/\(.*?\)/g, " ")
+    .replace(/\b(junction|jn|jct|junc|railway station|station|stn)\b/gi, " ")
+    .replace(/[^a-zA-Z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return { station: "", stationKey: "" };
+  let stationKey = s.toLowerCase().replace(/\s+/g, "-");
+  stationKey = STATION_ALIASES[stationKey] || stationKey;
+  const station = s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  return { station, stationKey };
+}
+
+function extractStationFromText(text) {
+  const m = (text || "").match(/(?:DELIVERY\s+STATION|STATION)\s*[:\-]\s*([^\n|]+)/i);
+  return m ? m[1].trim() : "";
+}
+
+// naya outlet mile to client doc me register (dashboard chips yahin se aate hain)
+async function registerOutlet(clientId, station, stationKey) {
+  if (!stationKey) return;
+  try {
+    await admin.firestore().doc(`clients/${clientId}`)
+      .set({ outlets: { [stationKey]: station } }, { merge: true });
+  } catch (e) {
+    warn(`registerOutlet failed: ${e.message}`);
+  }
+}
+
 function getMissingFields(orderData) {
   const missing = [];
   const name = (orderData.customerName || "").trim();
@@ -1783,6 +1820,7 @@ async function fillMissingFields(emailText, missingFieldsStr, tag) {
     contactNo: "contactNo (10-digit mobile number)",
     orderNo: "orderNo (order reference number)",
     paymentType: "paymentType (COD or Prepaid)",
+    STATION: "delivery station name exactly as written (e.g. 'MERTA ROAD (MTD)'). Empty string if not present",
     items: "items (array of {name, quantity, price})",
     totalAmount: "totalAmount (total order value as number)",
     tax: "tax (GST/tax amount as number)",
@@ -1879,7 +1917,7 @@ STRICT GLOBAL RULES (apply to ALL vendors):
 8. PAYMENT: "COD"/"Cash on Delivery"/"CASH_ON_DELIVERY"→"COD"; "PRE_PAID"/"PREPAID"/"Online"/"ONLINE"→"Prepaid".
 
 JSON SCHEMA (return this exact structure, no markdown):
-{"_thinking":"...","deliveryDate":"YYYY-MM-DD","deliveryTime":"HH:MM","items":[{"name":"","quantity":1,"price":0}],"subTotal":0,"tax":0,"deliveryCharge":0,"totalAmount":0,"orderNo":"","vendorName":"${vendorName}","customerName":"","contactNo":"","trainInfo":"","coach":"","paymentType":"COD","remark":""}
+{"_thinking":"...","deliveryDate":"YYYY-MM-DD","deliveryTime":"HH:MM","items":[{"name":"","quantity":1,"price":0}],"subTotal":0,"tax":0,"deliveryCharge":0,"totalAmount":0,"orderNo":"","vendorName":"${vendorName}","customerName":"","contactNo":"","trainInfo":"","coach":"","station":"","paymentType":"COD","remark":""}
 
 SENDER: "${senderEmail}" | SUBJECT: "${subject}"
 BODY:
@@ -2423,6 +2461,12 @@ async function processEmail(
       return;
     }
 
+    // ── Station → outlet ──
+    if (!orderData.station) orderData.station = extractStationFromText(fullText);
+    const { station, stationKey } = normalizeStation(orderData.station);
+    orderData.station = station;
+    orderData.stationKey = stationKey;
+
     const finalOrderNo = (orderData.orderNo || orderData.pnr || "")
       .toString()
       .replace(/\//g, "-")
@@ -2608,6 +2652,7 @@ async function processEmail(
         );
         orderMap.set(orderDocId(clientId, finalOrderNo), newDoc);
         log(`${tag}    ✅ SAVED #${finalOrderNo} | ₹${orderData.totalAmount}`);
+        registerOutlet(clientId, station, stationKey).catch(() => {});
 
         // 🔔 Notify the client's registered devices about the NEW order
         sendNewOrderPush(clientId, newDoc, tag).catch(() => {});
