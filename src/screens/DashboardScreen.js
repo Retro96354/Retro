@@ -57,6 +57,15 @@ const TABLE_WIDTH =
 // 'Completed' and 'Cancelled' remain hidden as intended.
 // ─────────────────────────────────────────────────────────────────────────────
 const VISIBLE_STATUSES = ['Active', 'Confirmed', 'confirmed', 'Confirm', 'confirm'];
+const OUTLET_KEY = 'dashboard_outlet';
+const BACKLOG_DELAY_MS = 1500; // auto-print ON hone par purane orders ka delay
+const outletKeyOf = (o) => o.stationKey || '__none__';
+const toDateStr = (v) => {
+  try {
+    const d = v?.toDate ? v.toDate() : new Date(v);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  } catch { return ''; }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dashboard-table-only display helper. This never touches the actual value
@@ -575,7 +584,14 @@ const autoPrintRef   = useRef(autoPrint);
 const ordersRef      = useRef([]);
 const handlePrintRef = useRef(null);
 const autoTimersRef  = useRef({});            // orderId -> timeout
-const autoDoneRef    = useRef(new Set());     // jo order already schedule/print ho chuke
+const autoPrintedRef = useRef(new Set()); // jo order sach me auto-print ho chuke
+const [selectedOutlet, setSelectedOutlet] = useState(() => {
+  try { return localStorage.getItem(`${OUTLET_KEY}_${clientId}`) || 'ALL'; }
+  catch { return 'ALL'; }
+});
+const [knownOutlets, setKnownOutlets] = useState({}); // { 'merta-road': 'Merta Road' }
+const selectedOutletRef = useRef(selectedOutlet);
+selectedOutletRef.current = selectedOutlet;
 const printChainRef  = useRef(Promise.resolve()); // orders ek-ek karke print hon
 
 autoPrintRef.current = autoPrint;
@@ -606,17 +622,8 @@ autoPrintRef.current = autoPrint;
 const handleAutoPrintToggle = () => {
   const next = !autoPrint;
   setAutoPrint(next);
-
-  try {
-    localStorage.setItem(AUTO_PRINT_KEY, String(next));
-  } catch {}
-
-  // Auto-print OFF karte hi pending timers cancel
-  if (!next) {
-    Object.values(autoTimersRef.current).forEach(clearTimeout);
-    autoTimersRef.current = {};
-  }
-}; // IMPORTANT: yahan function close hona chahiye
+  try { localStorage.setItem(AUTO_PRINT_KEY, String(next)); } catch {}
+};
 
 const handleWaSilentToggle = async () => {
   const next = !waSilent;
@@ -637,39 +644,52 @@ const [waSilent, setWaSilent] = useState(false);
 const waSilentRef = useRef(false);
 waSilentRef.current = waSilent;
 
-// Sirf refs use karta hai, isliye snapshot ke andar se safely call ho sakta hai
-const scheduleAutoPrint = (orderId) => {
+// Sirf refs use karta hai → snapshot ke purane closure se bhi safe
+const isAutoPrintable = (o) =>
+  VISIBLE_STATUSES.includes(o.status) &&
+  toDateStr(o.deliveryDate) === getTodayStr() &&
+  (selectedOutletRef.current === 'ALL' || outletKeyOf(o) === selectedOutletRef.current);
+
+const scheduleAutoPrint = (orderId, delayMs = AUTO_PRINT_DELAY_MS) => {
   if (Platform.OS !== 'web') return;
-  if (autoDoneRef.current.has(orderId)) return;
-  autoDoneRef.current.add(orderId);
+  if (autoTimersRef.current[orderId] || autoPrintedRef.current.has(orderId)) return;
 
   autoTimersRef.current[orderId] = setTimeout(() => {
     delete autoTimersRef.current[orderId];
-    if (!autoPrintRef.current) return;
-
-    // Latest order data lo, aur check karo abhi bhi print layak hai
-    const latest = ordersRef.current.find(o => o.id === orderId);
-    if (!latest || !VISIBLE_STATUSES.includes(latest.status)) return;
-
-    // Queue: ek order ka print khatam hone ke baad hi agla
     printChainRef.current = printChainRef.current.then(async () => {
       if (!autoPrintRef.current) return;
+      const latest = ordersRef.current.find(o => o.id === orderId);
+      if (!latest || !isAutoPrintable(latest) || autoPrintedRef.current.has(orderId)) return;
+      autoPrintedRef.current.add(orderId);
       await handlePrintRef.current?.(latest);
       await new Promise(r => setTimeout(r, AUTO_PRINT_GAP_MS));
-    });
-  }, AUTO_PRINT_DELAY_MS);
+    }).catch(() => {});
+  }, delayMs);
 };
 
-// Unmount par timers saaf
-useEffect(() => () => {
-  Object.values(autoTimersRef.current).forEach(clearTimeout);
-}, []);
+// Toggle ON / outlet change / first load par chalta hai
+const syncAutoPrint = () => {
+  if (!autoPrintRef.current) {
+    Object.values(autoTimersRef.current).forEach(clearTimeout);
+    autoTimersRef.current = {};
+    return;
+  }
+  Object.keys(autoTimersRef.current).forEach((id) => {
+    const o = ordersRef.current.find(x => x.id === id);
+    if (!o || !isAutoPrintable(o)) {
+      clearTimeout(autoTimersRef.current[id]);
+      delete autoTimersRef.current[id];
+    }
+  });
+  ordersRef.current.filter(isAutoPrintable)
+    .forEach(o => scheduleAutoPrint(o.id, BACKLOG_DELAY_MS));
+};
+
+useEffect(() => { if (!loading) syncAutoPrint(); }, [autoPrint, selectedOutlet, loading]);
+useEffect(() => () => { Object.values(autoTimersRef.current).forEach(clearTimeout); }, []);
 
   // ── Today's date string for comparison (YYYY-MM-DD) ──
-  const getTodayStr = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
+  const getTodayStr = () => toDateStr(new Date());
 
   // ── Subscribe to client alertSound ──
   useEffect(() => {
@@ -678,6 +698,7 @@ useEffect(() => () => {
       if (snap.exists()) {
        setAlertSound(snap.data().alertSound || SOUND_OPTIONS[0].url);
        setWaSilent(snap.data().waSilentOnPrint === true);
+       setKnownOutlets(snap.data().outlets || {});
       }
     });
     return () => unsub();
@@ -732,11 +753,13 @@ useEffect(() => () => {
       ordersRef.current = list;
       setLoading(false);
 
-      if (isFirstLoad.current) { isFirstLoad.current = false; return; }
-      snapshot.docChanges().forEach((change) => { if (change.type === 'added') { playAlert(); 
-        if (autoPrintRef.current) scheduleAutoPrint(change.doc.id);  
-      }
-       });
+      snapshot.docChanges().forEach((change) => {
+      if (change.type === 'added') {
+      playAlert();
+      const o = list.find(x => x.id === change.doc.id);
+      if (autoPrintRef.current && o && isAutoPrintable(o)) scheduleAutoPrint(change.doc.id);
+       }
+     });
     }, (error) => { Alert.alert('Sync Error', error.message); });
 
     const unsubscribeExecs = onSnapshot(
@@ -753,6 +776,7 @@ useEffect(() => () => {
   // (e.g. COD orders from Yatri Restro vendor postProcess) was silently hidden.
   const activeOrders = orders.filter(o => {
     if (!VISIBLE_STATUSES.includes(o.status)) return false;
+    if (selectedOutlet !== 'ALL' && outletKeyOf(o) !== selectedOutlet) return false;
     if (!todayOnly) return true;
 
     if (!o.deliveryDate) return false;
@@ -764,6 +788,24 @@ useEffect(() => () => {
       return orderDateStr === getTodayStr();
     } catch { return false; }
   });
+
+  const outletOptions = (() => {
+  const map = { ...knownOutlets };
+  orders.forEach(o => {
+    if (o.stationKey && !map[o.stationKey]) map[o.stationKey] = o.station || o.stationKey;
+  });
+  const list = Object.entries(map)
+    .map(([key, label]) => ({ key, label }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  if (orders.some(o => !o.stationKey)) list.push({ key: '__none__', label: 'Unassigned' });
+  return [{ key: 'ALL', label: 'All Outlets' }, ...list];
+})();
+
+const handleOutletChange = (key) => {
+  setSelectedOutlet(key);
+  setCurrentPage(1);
+  try { localStorage.setItem(`${OUTLET_KEY}_${clientId}`, key); } catch {}
+};
 
   // ── Pagination derived values ──
   const totalItems  = activeOrders.length;
@@ -1096,6 +1138,25 @@ useEffect(() => () => {
 
         </View>
       </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14, flexGrow: 0 }}>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          {outletOptions.map(opt => {
+          const active = selectedOutlet === opt.key;
+          return (
+           <TouchableOpacity
+          key={opt.key}
+          onPress={() => handleOutletChange(opt.key)}
+          style={[styles.todayBtn, active && styles.todayBtnActive]}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="location-outline" size={14} color={active ? '#ffffff' : '#0f172a'} />
+          <Text style={[styles.todayBtnText, active && styles.todayBtnTextActive]}>{opt.label}</Text>
+        </TouchableOpacity>
+           );
+          })}
+        </View>
+      </ScrollView>
 
       {waNotice ? (
         <TouchableOpacity style={styles.waNotice} onPress={() => setWaNotice('')} activeOpacity={0.8}>
