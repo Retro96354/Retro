@@ -76,6 +76,11 @@ const domConfig = {
       transform: v => v.trim().replace(/\s*\/\s*/g, '/') || null,
     },
 
+    station: {
+      labelText: 'DELIVERY STATION',
+      transform: v => v.trim() || null,
+    },
+
     paymentType: {
       labelText: 'PAYMENT STATUS',
       transform: v => {
