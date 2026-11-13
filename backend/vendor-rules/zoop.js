@@ -168,6 +168,13 @@ const domConfig = {
       transform: v => v.trim().replace(/\s*\/\s*/g, '/') || null,
     },
 
+    station: {
+      labelText:   'At',
+      exactMatch:  true,
+      valuePrefix: ': ',
+      transform: v => v.trim() || null,
+    },
+
     _deliveryRaw: {
       labelText:   'Delivery Date',   // Row 4 RIGHT column — not ETA
       valuePrefix: ': ',
