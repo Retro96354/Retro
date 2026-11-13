@@ -104,6 +104,11 @@ const domConfig = {
       transform: v => v.trim() || null,
     },
 
+    station: {
+     match: /^STATION:\s*(.+)$/i,
+     transform: v => v.trim() || null,
+   },
+
     _coachRaw: {
       match: /^COACH:\s*(.+)$/i,
       transform: v => v.trim(),
