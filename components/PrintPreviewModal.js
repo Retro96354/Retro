@@ -12,7 +12,7 @@
 
 import React from 'react';
 import { Modal, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
-import { receiptToPreviewLines } from './printFormatter';
+//import { receiptToPreviewLines } from './printFormatter';
 
 const ALIGN_MAP = { left: 'flex-start', center: 'center', right: 'flex-end' };
 
