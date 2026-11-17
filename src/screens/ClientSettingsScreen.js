@@ -8,6 +8,8 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
 import * as wa from '../services/Whatsappapi';
+import { subscribePrinters, savePrinter, removePrinter, validatePrinter } from '../services/printerStore';
+import { checkBridge, listSystemPrinters, testPrinter } from '../services/printService';
 
 const SOUND_OPTIONS = [
   { name: 'Classic Bell', icon: 'notifications-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
@@ -15,6 +17,17 @@ const SOUND_OPTIONS = [
   { name: 'Digital Alert', icon: 'pulse-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2870/2870-preview.mp3' },
   { name: 'Notification Tone', icon: 'volume-medium-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2872/2872-preview.mp3' },
 ];
+
+const PRINTER_MODES = [
+  { key: 'network', label: 'WiFi printer' },
+  { key: 'usb_silent', label: 'USB (direct print)' },
+  { key: 'browser', label: 'Browser print' },
+];
+const PRINTER_MODE_LABEL = { network: 'WIFI', usb_silent: 'USB', browser: 'BROWSER' };
+const blankPrinter = () => ({
+  id: '', name: '', mode: 'network', ip: '', port: '9100',
+  systemPrinterName: '', outletId: '', isDefault: false, fallbackToBrowser: true,
+});
 
 // Build a QR code image URL from Google Charts API (no extra dependency needed)
 const getQRUrl = (text) =>
@@ -90,6 +103,15 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
   const [openPicker, setOpenPicker] = useState(null);   // 'print' | 'review' | null
   const [savingAuto, setSavingAuto] = useState(false);
 
+  // Printers state
+  const [printers, setPrinters] = useState([]);
+  const [bridgeOnline, setBridgeOnline] = useState(null); // null = check ho raha hai
+  const [printerForm, setPrinterForm] = useState(null);   // null = form band
+  const [printerSaving, setPrinterSaving] = useState(false);
+  const [testingId, setTestingId] = useState('');
+  const [systemPrinters, setSystemPrinters] = useState([]);
+  const [sysOpen, setSysOpen] = useState(false);
+
   const screenWidth = useScreenWidth();
   const isWide = screenWidth >= 768;
 
@@ -155,6 +177,13 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     if (!clientId) return;
     refreshWa();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId]);
+
+  useEffect(() => {
+    if (!clientId) return;
+    const unsub = subscribePrinters(clientId, setPrinters, (e) => console.error('printers load error:', e.message));
+    checkBridge().then(setBridgeOnline);
+    return () => unsub();
   }, [clientId]);
 
   /* ── WhatsApp: connect / update ── */
@@ -445,6 +474,55 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
       wa.notify('Save nahi hua', e.message);
     }
     setSavingAuto(false);
+  };
+
+    /* ── Printers ── */
+  const refreshBridge = async () => {
+    setBridgeOnline(null);
+    setBridgeOnline(await checkBridge());
+  };
+
+  const openPrinterForm = (p) => {
+    setPrinterForm(p ? { ...blankPrinter(), ...p, port: String(p.port || 9100) } : blankPrinter());
+    setSysOpen(false);
+  };
+
+  const loadSystemPrinters = async () => {
+    try {
+      setSystemPrinters(await listSystemPrinters());
+    } catch (e) {
+      setSystemPrinters([]);
+      wa.notify('Bridge nahi mila', e.message);
+    }
+  };
+
+  const handleSavePrinter = async () => {
+    const problem = validatePrinter(printerForm);
+    if (problem) { wa.notify('Adhoori jaankari', problem); return; }
+    setPrinterSaving(true);
+    try {
+      await savePrinter(clientId, printerForm, printers);
+      setPrinterForm(null);
+    } catch (e) {
+      wa.notify('Save nahi hua', e.message);
+    }
+    setPrinterSaving(false);
+  };
+
+  const handleDeletePrinter = async (p) => {
+    const ok = await wa.confirmAsync('Printer hatayein?', `"${p.name}" hata diya jayega.`, 'Hatayein');
+    if (!ok) return;
+    try { await removePrinter(p.id); } catch (e) { wa.notify('Error', e.message); }
+  };
+
+  const handleTestPrinter = async (p) => {
+    setTestingId(p.id);
+    const r = await testPrinter(p);
+    setTestingId('');
+    wa.notify(
+      r.ok ? '✓ Test print bheja' : 'Test print fail',
+      r.ok ? 'Printer se test slip nikalni chahiye.' : r.error
+    );
   };
 
   if (loading) {
@@ -1141,6 +1219,222 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     </View>
   );
 
+  /* ── Printers card ── */
+  const renderPrinters = () => {
+    const f = printerForm;
+    const setF = (patch) => setPrinterForm((p) => ({ ...p, ...patch }));
+
+    return (
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.cardIconWrap, { backgroundColor: '#eff6ff' }]}>
+            <Ionicons name="print-outline" size={18} color="#3b82f6" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>Printers</Text>
+            <Text style={styles.cardSubtitle}>
+              WiFi ya USB printer jodein. Koi printer nahi jodenge to pehle ki tarah browser se print hoga
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.divider} />
+
+        <View style={styles.bridgeRow}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <View style={[styles.bridgeDot, { backgroundColor: bridgeOnline === null ? '#94a3b8' : bridgeOnline ? '#16a34a' : '#ef4444' }]} />
+            <Text style={styles.kvKey}>
+              Print Bridge: {bridgeOnline === null ? 'check ho raha hai…' : bridgeOnline ? 'Online' : 'Offline'}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={refreshBridge}>
+            <Text style={styles.qrEditText}>Dobara check</Text>
+          </TouchableOpacity>
+        </View>
+
+        {bridgeOnline === false ? (
+          <View style={styles.warnBox}>
+            <Ionicons name="warning-outline" size={14} color="#b45309" style={{ marginTop: 1 }} />
+            <Text style={styles.warnText}>
+              Is computer par Print Bridge chalu nahi hai. WiFi / USB (direct) printer ke liye ise chalana zaroori hai
+              (start-bridge.bat). Browser print iske bina chalta rahega.
+            </Text>
+          </View>
+        ) : null}
+
+        {printers.length === 0 ? (
+          <View style={styles.inboxEmptyBox}>
+            <Ionicons name="print-outline" size={22} color="#94a3b8" />
+            <Text style={styles.inboxEmptyText}>Abhi koi printer add nahi hai</Text>
+          </View>
+        ) : (
+          printers.map((p) => (
+            <View key={p.id} style={styles.inboxSenderRow}>
+              <View style={styles.inboxSenderLeft}>
+                <View style={styles.inboxVendorBadge}>
+                  <Text style={styles.inboxVendorBadgeText}>{PRINTER_MODE_LABEL[p.mode] || p.mode}</Text>
+                </View>
+                <View style={{ marginLeft: 8, flex: 1 }}>
+                  <Text style={styles.inboxSenderNum} numberOfLines={1}>
+                    {p.name}{p.isDefault ? '  ★ default' : ''}
+                  </Text>
+                  <Text style={styles.inboxSenderDate} numberOfLines={1}>
+                    {p.mode === 'network' ? `${p.ip}:${p.port || 9100}` : p.mode === 'usb_silent' ? p.systemPrinterName : 'Browser print'}
+                    {p.outletId ? ` · ${p.outletId}` : ''}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.printerBtns}>
+                {p.mode !== 'browser' ? (
+                  <TouchableOpacity style={styles.printerMiniBtn} onPress={() => handleTestPrinter(p)} disabled={testingId === p.id}>
+                    {testingId === p.id
+                      ? <ActivityIndicator size="small" color="#475569" />
+                      : <Text style={styles.printerMiniText}>Test</Text>}
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity style={styles.printerMiniBtn} onPress={() => openPrinterForm(p)}>
+                  <Text style={styles.printerMiniText}>Edit</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.inboxSenderRemoveBtn} onPress={() => handleDeletePrinter(p)}>
+                  <Ionicons name="trash-outline" size={15} color="#ef4444" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))
+        )}
+
+        {f ? (
+          <View style={{ marginTop: 14 }}>
+            <Text style={[styles.fieldLabel, { fontSize: 12 }]}>{f.id ? 'Printer edit karein' : 'Naya printer'}</Text>
+
+            <Text style={styles.fieldLabel}>Printer ka naam</Text>
+            <TextInput
+              style={[styles.fieldInput, { marginBottom: 12 }]}
+              value={f.name}
+              onChangeText={(v) => setF({ name: v })}
+              placeholder="Jaise: Counter printer"
+              placeholderTextColor="#c7d0dc"
+            />
+
+            <Text style={styles.fieldLabel}>Printer ka type</Text>
+            <View style={[styles.chipWrap, { marginBottom: 6 }]}>
+              {PRINTER_MODES.map((m) => {
+                const on = f.mode === m.key;
+                return (
+                  <TouchableOpacity key={m.key} style={[styles.vChip, on && styles.vChipOn]} onPress={() => { setF({ mode: m.key }); setSysOpen(false); }}>
+                    <Text style={[styles.vChipText, on && styles.vChipTextOn]}>{m.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {f.mode === 'network' ? (
+              <>
+                <Text style={styles.fieldLabel}>Printer ka IP address aur port</Text>
+                <View style={[styles.inboxInputRow, { marginBottom: 12 }]}>
+                  <TextInput
+                    style={[styles.fieldInput, { flex: 1 }]}
+                    value={f.ip}
+                    onChangeText={(v) => setF({ ip: v.replace(/[^0-9.]/g, '') })}
+                    placeholder="192.168.1.50"
+                    placeholderTextColor="#c7d0dc"
+                    keyboardType="decimal-pad"
+                    autoCorrect={false}
+                  />
+                  <TextInput
+                    style={[styles.fieldInput, { width: 90 }]}
+                    value={f.port}
+                    onChangeText={(v) => setF({ port: v.replace(/[^0-9]/g, '').slice(0, 5) })}
+                    placeholder="9100"
+                    placeholderTextColor="#c7d0dc"
+                    keyboardType="number-pad"
+                  />
+                </View>
+              </>
+            ) : null}
+
+            {f.mode === 'usb_silent' ? (
+              <>
+                <Text style={styles.fieldLabel}>Is computer me installed printer</Text>
+                <TouchableOpacity
+                  style={[styles.vendorSelect, { marginBottom: 8 }, sysOpen && styles.vendorSelectOpen]}
+                  onPress={async () => { const open = !sysOpen; setSysOpen(open); if (open) await loadSystemPrinters(); }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.vendorSelectText, !f.systemPrinterName && { color: '#94a3b8' }]} numberOfLines={1}>
+                    {f.systemPrinterName || 'Printer chuniye'}
+                  </Text>
+                  <Ionicons name={sysOpen ? 'chevron-up' : 'chevron-down'} size={16} color="#64748b" />
+                </TouchableOpacity>
+                {sysOpen ? (
+                  <View style={[styles.vendorList, { marginBottom: 12 }]}>
+                    {systemPrinters.length === 0 ? (
+                      <Text style={styles.errText}>Koi printer nahi mila. Print Bridge chal raha hai?</Text>
+                    ) : (
+                      systemPrinters.map((sp) => {
+                        const on = sp.name === f.systemPrinterName;
+                        return (
+                          <TouchableOpacity
+                            key={sp.name}
+                            style={[styles.vendorOption, on && styles.vendorOptionActive]}
+                            onPress={() => { setF({ systemPrinterName: sp.name }); setSysOpen(false); }}
+                          >
+                            <Text style={[styles.vendorOptionText, on && styles.vendorOptionTextActive]}>{sp.name}</Text>
+                            {on ? <Ionicons name="checkmark" size={16} color="#1d4ed8" /> : null}
+                          </TouchableOpacity>
+                        );
+                      })
+                    )}
+                  </View>
+                ) : null}
+              </>
+            ) : null}
+
+            <Text style={styles.fieldLabel}>Outlet / Station (optional)</Text>
+            <TextInput
+              style={[styles.fieldInput, { marginBottom: 6 }]}
+              value={f.outletId}
+              onChangeText={(v) => setF({ outletId: v })}
+              placeholder="Khali = sab orders ke liye"
+              placeholderTextColor="#c7d0dc"
+            />
+
+            <View style={styles.switchRow}>
+              <Text style={styles.switchLabel}>Default printer</Text>
+              <Switch value={!!f.isDefault} onValueChange={(v) => setF({ isDefault: v })} trackColor={{ true: '#16a34a', false: '#e2e8f0' }} />
+            </View>
+            {f.mode !== 'browser' ? (
+              <View style={styles.switchRow}>
+                <Text style={styles.switchLabel}>Printer na mile to browser print chalayein</Text>
+                <Switch value={f.fallbackToBrowser !== false} onValueChange={(v) => setF({ fallbackToBrowser: v })} trackColor={{ true: '#16a34a', false: '#e2e8f0' }} />
+              </View>
+            ) : null}
+
+            <View style={styles.paymentBtnRow}>
+              <TouchableOpacity style={[styles.btn, styles.btnOutline, { flex: 1 }]} onPress={() => setPrinterForm(null)}>
+                <Text style={styles.btnOutlineText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnGreen, { flex: 2 }, printerSaving && styles.btnDisabled]}
+                onPress={handleSavePrinter}
+                disabled={printerSaving}
+              >
+                {printerSaving
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <><Ionicons name="save-outline" size={15} color="#fff" style={{ marginRight: 6 }} /><Text style={styles.btnText}>Save Printer</Text></>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <TouchableOpacity style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]} onPress={() => openPrinterForm(null)}>
+            <Ionicons name="add-circle-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
+            <Text style={styles.btnText}>Printer Add Karein</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -1213,6 +1507,9 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
             {renderAutoCard()}
           </>
         ) : null}
+
+        <Text style={[styles.sectionLabel, { marginTop: 8 }]}>PRINTERS</Text>
+        {renderPrinters()}
 
         {/* ── Notification Sound ── */}
         <Text style={[styles.sectionLabel, { marginTop: 8 }]}>NOTIFICATIONS</Text>
@@ -1493,6 +1790,16 @@ const styles = StyleSheet.create({
   // ── Sound ──
   soundGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   soundGridWide: {},
+
+  // ── Printers ──
+  bridgeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  bridgeDot: { width: 8, height: 8, borderRadius: 4, marginRight: 7 },
+  printerBtns: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  printerMiniBtn: {
+    minWidth: 44, alignItems: 'center', paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 6, borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc',
+  },
+  printerMiniText: { fontSize: 11, fontWeight: '700', color: '#475569' },
 
   soundTile: {
     flex: 1, minWidth: 120, alignItems: 'center',
