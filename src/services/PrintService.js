@@ -7,7 +7,7 @@
 //
 // Printer nahi mila (ya koi printer configured nahi) -> browser flow, yaani purane clients pe koi change nahi.
 
-import { formatOrderReceipt, formatTestReceipt } from './printFormatter';
+import { formatOrderReceipt, formatTestReceipt } from './PrintFormatter';
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:17890';
 
