@@ -8,7 +8,7 @@ import { collection, onSnapshot, query, where, updateDoc, doc, getDoc, increment
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
-import { subscribePrinters } from '../services/printerStore';
+import { subscribePrinters } from '../services/PrinterStore';
 import { printOrder, pickPrinterForOrder } from '../services/printService';
 import { formatOrderReceipt } from '../services/printFormatter';
 import PrintPreviewModal from '../components/PrintPreviewModal';
