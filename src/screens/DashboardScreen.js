@@ -11,8 +11,8 @@ import { db } from '../firebaseConfig';
 import { subscribePrinters } from '../services/PrinterStore';
 import { printOrder, pickPrinterForOrder } from '../services/PrintService';
 import { formatOrderReceipt } from '../services/PrintFormatter';
-import PrintPreviewModal from '../components/PrintPreviewModal';
-import { notifyOrderPrinted, notify } from '../services/Whatsappapi';
+import PrintPreviewModal from '../components/PrintPreviewModal'; 
+import { notifyOrderPrinted, notify } from '../services/Whatsappapi'; 
 
 const SOUND_OPTIONS = [
   { name: 'Classic Bell', url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
