@@ -4,11 +4,15 @@ import {
   SafeAreaView, Modal, Platform, Alert, Dimensions, ScrollView, Animated,
   useWindowDimensions,
 } from 'react-native';
-import { collection, onSnapshot, query, where, updateDoc, doc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, updateDoc, doc, getDoc, increment } from 'firebase/firestore';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
-import { notifyOrderPrinted } from '../services/Whatsappapi';
+import { subscribePrinters } from '../services/printerStore';
+import { printOrder, pickPrinterForOrder } from '../services/printService';
+import { formatOrderReceipt } from '../services/printFormatter';
+import PrintPreviewModal from '../components/PrintPreviewModal';
+import { notifyOrderPrinted, notify } from '../services/Whatsappapi';
 
 const SOUND_OPTIONS = [
   { name: 'Classic Bell', url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
@@ -19,6 +23,7 @@ const SOUND_OPTIONS = [
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
 const TODAY_FILTER_KEY = 'dashboard_today_only';
+const BRIDGE_PREVIEW = false;
 const AUTO_PRINT_KEY = 'dashboard_auto_print';
 const AUTO_PRINT_DELAY_MS = 10000; // order aane ke 10 sec baad print (11000/12000 bhi kar sakte ho)
 const AUTO_PRINT_GAP_MS = 3000;    // do orders ek saath aaye to unke beech ka gap
@@ -318,10 +323,17 @@ const ExpandableOrderRow = ({ item, onPrint, onAssign, isPrinted, isMobile }) =>
           </View>
 
           <View style={{ position: 'relative' }}>
-            <TouchableOpacity style={styles.printBtn} onPress={() => onPrint(item)}>
+            <TouchableOpacity
+              style={[styles.printBtn, item.printStatus === 'failed' && { backgroundColor: '#dc2626' }]}
+              onPress={() => onPrint(item)}
+            >
               <Ionicons name="print-outline" size={16} color="#ffffff" />
             </TouchableOpacity>
-            {isPrinted && (
+            {item.printStatus === 'failed' ? (
+              <View style={[styles.tickBadge, { backgroundColor: '#dc2626' }]}>
+                <Ionicons name="close" size={8} color="#fff" />
+              </View>
+            ) : isPrinted && (
               <View style={styles.tickBadge}>
                 <Ionicons name="checkmark" size={8} color="#fff" />
               </View>
@@ -563,6 +575,9 @@ export default function DashboardScreen({ clientId }) {
   const [loading, setLoading]         = useState(true);
   const [printedOrders, setPrintedOrders] = useState(new Set());
   const [alertSound, setAlertSound]   = useState(SOUND_OPTIONS[0].url);
+  const [printers, setPrinters]     = useState([]);
+  const [clientInfo, setClientInfo] = useState({});
+  const [preview, setPreview]       = useState(null); // { order, printer, receipt, printing }
 
   const { width: screenWidth } = useWindowDimensions();
   const isMobile = screenWidth < MOBILE_BREAKPOINT;
@@ -607,6 +622,7 @@ autoPrintRef.current = autoPrint;
 
   const soundRef    = useRef(null);
   const isFirstLoad = useRef(true);
+  const printingRef = useRef(new Set()); 
   const [waNotice, setWaNotice] = useState('');
   const waNoticeTimer = useRef(null);
 
@@ -696,7 +712,13 @@ useEffect(() => () => { Object.values(autoTimersRef.current).forEach(clearTimeou
     if (!clientId) return;
     const unsub = onSnapshot(doc(db, 'clients', clientId), (snap) => {
       if (snap.exists()) {
-       setAlertSound(snap.data().alertSound || SOUND_OPTIONS[0].url);
+        const d = snap.data();
+        setAlertSound(d.alertSound || SOUND_OPTIONS[0].url);
+        setClientInfo({
+          businessName: d.businessName || 'E-Catering Orders',
+          address: d.address || '',
+          paymentId: d.paymentId || '',
+        });
        setWaSilent(snap.data().waSilentOnPrint === true);
        setKnownOutlets(snap.data().outlets || {});
       }
@@ -720,6 +742,12 @@ useEffect(() => () => { Object.values(autoTimersRef.current).forEach(clearTimeou
       setAppReady(true);
     })();
   }, [alertSound]);
+
+  // ── Subscribe to printers ──
+  useEffect(() => {
+    if (!clientId) return;
+    return subscribePrinters(clientId, setPrinters, () => {});
+  }, [clientId]);
 
   async function playAlert() {
     if (Platform.OS === 'web' && soundRef.current) {
@@ -829,7 +857,7 @@ const handleOutletChange = (key) => {
   };
 
   // ── Print ──
-  const handlePrint = async (order) => {
+  const printViaBrowser = async (order) => {
     try {
       let clientPaymentId = '';
       // ✅ Pulled from the client's profile instead of being hardcoded, so
@@ -919,7 +947,7 @@ const handleOutletChange = (key) => {
   </head>
   <body>
 
-    <div class="center bold" style="font-size:18px;margin-bottom:2px;">${clientBusinessName}</div>
+    <div class="center bold" style="font-size:18px; font-weight:900; color:#000000; margin-bottom:2px;"> ${clientBusinessName} </div>
     <hr class="divider"/>
     <table class="detail-table">
       <tr><td>Order No.</td><td>${order.orderNo || order.pnr || 'N/A'}</td></tr>
@@ -937,10 +965,6 @@ const handleOutletChange = (key) => {
     <hr class="divider"/>
     <table class="totals-table">
       <tr><td>Remarks:</td><td>${order.remark && order.remark.trim() !== '' ? order.remark : ''}</td></tr>
-      <tr><td>Advance:</td><td>₹ 0</td></tr>
-      <tr><td>GST:</td><td>₹ ${order.tax || 0}</td></tr>
-      <tr><td>Tax:</td><td>₹ 0</td></tr>
-      <tr><td>Discount:</td><td>₹ 0</td></tr>
       <tr class="total-row"><td>Total:</td><td>₹ ${order.totalAmount || 0}</td></tr>
       <tr class="collect-row"><td>Amount to collect:</td><td>₹ ${amountToCollect}</td></tr>
     </table>
@@ -998,6 +1022,73 @@ const handleOutletChange = (key) => {
       console.error('Printing Error:', error);
       Alert.alert('Print Failed', 'Could not generate the receipt.');
     }
+  };
+
+    // WiFi/USB print success: order Completed + print info save
+  const markPrinted = (order, printer) => {
+    setPrintedOrders(prev => new Set([...prev, order.id]));
+    updateDoc(doc(db, 'orders', order.id), {
+      status: 'Completed',
+      printStatus: 'printed',
+      printedAt: new Date().toISOString(),
+      printedVia: printer?.name || 'browser',
+      printError: '',
+      printAttempts: increment(1),
+    }).catch(() => {});
+  };
+
+  // Print fail: order Active hi rehta hai, sirf fail ka nishaan lagta hai
+  const markPrintFailed = (order, error) => {
+    updateDoc(doc(db, 'orders', order.id), {
+      printStatus: 'failed',
+      printError: String(error || '').slice(0, 200),
+      lastPrintAttemptAt: new Date().toISOString(),
+      printAttempts: increment(1),
+    }).catch(() => {});
+  };
+
+  // WiFi / USB (direct) printer se print
+  const runBridgePrint = async (order, printer) => {
+    if (printingRef.current.has(order.id)) return;
+    printingRef.current.add(order.id);
+    try {
+      const res = await printOrder(order, printer, {
+        browserPrint: printViaBrowser,
+        receiptOptions: clientInfo,
+      });
+      if (!res.ok) {
+        markPrintFailed(order, res.error);
+        notify('Print nahi hua', res.error || 'Printer se connect nahi ho paya');
+        return;
+      }
+      if (res.mode !== 'browser') markPrinted(order, printer);
+      else if (res.usedFallback) {
+        notify('Direct print nahi hua', `${res.error}\n\nBrowser print khola gaya.`);
+      }
+    } finally {
+      printingRef.current.delete(order.id);
+    }
+  };
+
+  // Print button yahin aata hai
+  const handlePrint = async (order) => {
+    const printer = pickPrinterForOrder(printers, order);
+    // Printer set nahi / browser mode / mobile => purana flow, bilkul same
+    if (Platform.OS !== 'web' || !printer || printer.mode === 'browser') {
+      return printViaBrowser(order);
+    }
+    if (BRIDGE_PREVIEW) {
+      setPreview({ order, printer, receipt: formatOrderReceipt(order, clientInfo), printing: false });
+      return;
+    }
+    await runBridgePrint(order, printer);
+  };
+
+  const confirmPreviewPrint = async () => {
+    if (!preview) return;
+    setPreview(p => ({ ...p, printing: true }));
+    await runBridgePrint(preview.order, preview.printer);
+    setPreview(null);
   };
 
   handlePrintRef.current = handlePrint; 
@@ -1066,6 +1157,7 @@ const handleOutletChange = (key) => {
   );
 
   return (
+
     <SafeAreaView style={styles.container}>
 
             {/* ── Top bar ── */}
@@ -1237,6 +1329,14 @@ const handleOutletChange = (key) => {
           </View>
         </TouchableOpacity>
       </Modal>
+      <PrintPreviewModal
+        visible={!!preview}
+        receipt={preview?.receipt || []}
+        printerName={preview?.printer?.name}
+        printing={!!preview?.printing}
+        onPrint={confirmPreviewPrint}
+        onClose={() => setPreview(null)}
+      />
     </SafeAreaView>
   );
 }
