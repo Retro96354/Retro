@@ -9,8 +9,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
 import { subscribePrinters } from '../services/PrinterStore';
-import { printOrder, pickPrinterForOrder } from '../services/printService';
-import { formatOrderReceipt } from '../services/printFormatter';
+import { printOrder, pickPrinterForOrder } from '../services/PrintService';
+import { formatOrderReceipt } from '../services/PrintFormatter';
 import PrintPreviewModal from '../components/PrintPreviewModal';
 import { notifyOrderPrinted, notify } from '../services/Whatsappapi';
 
