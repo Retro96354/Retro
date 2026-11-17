@@ -8,7 +8,7 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
 import * as wa from '../services/Whatsappapi';
-import { subscribePrinters, savePrinter, removePrinter, validatePrinter } from '../services/printerStore';
+import { subscribePrinters, savePrinter, removePrinter, validatePrinter } from '../services/PrinterStore';
 import { checkBridge, listSystemPrinters, testPrinter } from '../services/printService';
 
 const SOUND_OPTIONS = [
