@@ -1,0 +1,12 @@
+{
+  "name": "print-bridge",
+  "version": "1.0.0",
+  "description": "Local print bridge for dashboard (WiFi + USB silent printing)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=16" },
+  "license": "UNLICENSED",
+  "private": true
+}
