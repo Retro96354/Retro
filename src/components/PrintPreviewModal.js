@@ -1,15 +1,3 @@
-// PrintPreviewModal.js
-// WiFi / USB-silent mode me manual print se pehle receipt ka preview dikhata hai.
-// Browser mode me iski zarurat nahi (browser ka apna preview aata hai).
-//
-// Props:
-//   visible    : boolean
-//   receipt    : receipt ops (formatOrderReceipt ka output)
-//   printerName: string (header me dikhane ke liye, optional)
-//   printing   : boolean (Print dabane ke baad loader)
-//   onPrint()  : Print button
-//   onClose()  : Cancel / bahar tap
-
 import React from 'react';
 import { Modal, View, Text, ScrollView, TouchableOpacity, ActivityIndicator, StyleSheet } from 'react-native';
 import { receiptToPreviewLines } from '../services/PrintFormatter';
