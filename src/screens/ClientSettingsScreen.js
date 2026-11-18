@@ -18,7 +18,7 @@ const SOUND_OPTIONS = [
   { name: 'Notification Tone', icon: 'volume-medium-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2872/2872-preview.mp3' },
 ];
 
-const PRINT_BRIDGE_URL = 'https://drive.google.com/file/d/1LFw7z9G5GdWAfgdtpkHRskA6ytG9XO0l/view?usp=sharing';  // PrintBridge-Setup.exe ka link
+const PRINT_BRIDGE_URL = 'https://drive.google.com/file/d/1915o9N0a904ZGvZFQwfyfsnMzgFPaVta/view?usp=sharing';  // PrintBridge-Setup.exe ka link
 
 const PRINTER_MODES = [
   { key: 'network', label: 'WiFi printer' },
