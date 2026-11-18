@@ -89,3 +89,27 @@ export async function savePrinter(clientId, form, allPrinters = []) {
 export async function removePrinter(id) {
   await deleteDoc(doc(db, COL, id));
 }
+
+// ---------- Auto-detect (bridge /discover) se add ----------
+// found: { type: 'usb', name } ya { type: 'network', name, ip, port }
+
+// Ye printer pehle se add hai?
+export function isDiscoveredAdded(found, printers = []) {
+  if (found.type === 'usb') {
+    return printers.some((p) => p.mode === 'usb_silent' && p.systemPrinterName === found.name);
+  }
+  return printers.some((p) => p.mode === 'network' && p.ip === found.ip);
+}
+
+// Ek tap me add. Jo printer add hota hai wo default ban jata hai.
+export async function addDiscoveredPrinter(clientId, found, allPrinters = []) {
+  const form =
+    found.type === 'usb'
+      ? { mode: 'usb_silent', name: found.name, systemPrinterName: found.name }
+      : { mode: 'network', name: found.name, ip: found.ip, port: found.port || 9100 };
+  await savePrinter(
+    clientId,
+    { ...form, outletId: '', isDefault: true, fallbackToBrowser: true },
+    allPrinters,
+  );
+}
