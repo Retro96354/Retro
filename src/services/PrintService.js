@@ -1,4 +1,4 @@
-// printService.js
+// services/printService.js
 // Dashboard ka single print entry point.
 //
 //   printer.mode === 'browser'    -> purana flow (window.print / existing browserPrint function, preview ke saath)
@@ -62,6 +62,12 @@ export async function listSystemPrinters() {
   return data.printers || [];
 }
 
+// Settings: USB/installed + same-network WiFi printers khud dhundho (scan me kuch second lagte hain)
+export async function discoverPrinters() {
+  const data = await bridgeFetch('/discover', { timeoutMs: 40000 });
+  return { usb: data.usb || [], network: data.network || [], subnets: data.subnets || [] };
+}
+
 // ---------- printer selection ----------
 const norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 
@@ -106,17 +112,17 @@ function toBridgePayload(printer, receipt) {
  * @param {object} opts
  *   - browserPrint(order): dashboard ka existing browser print function (preview wala)
  *   - allowFallback (default true): bridge fail hone par browser print try kare.
- *       Auto Print me false rakhna (warna har order pe preview dialog khul jayega).
+ *   - receiptOptions: { businessName, address, paymentId } (client profile) - bill header/QR ke liye
  * @returns {{ok:boolean, mode:string, usedFallback?:boolean, error?:string}}
  */
-export async function printOrder(order, printer, { browserPrint, allowFallback = true } = {}) {
+export async function printOrder(order, printer, { browserPrint, allowFallback = true, receiptOptions } = {}) {
   if (!printer || printer.mode === 'browser' || !printer.mode) {
     if (browserPrint) await browserPrint(order);
     return { ok: true, mode: 'browser' };
   }
 
   try {
-    const receipt = formatOrderReceipt(order);
+    const receipt = formatOrderReceipt(order, receiptOptions);
     await bridgeFetch('/print', { method: 'POST', body: toBridgePayload(printer, receipt) });
     return { ok: true, mode: printer.mode };
   } catch (e) {
