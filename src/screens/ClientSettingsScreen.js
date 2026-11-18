@@ -8,8 +8,8 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { Audio } from 'expo-av';
 import { db } from '../firebaseConfig';
 import * as wa from '../services/Whatsappapi';
-import { subscribePrinters, savePrinter, removePrinter, validatePrinter } from '../services/PrinterStore'; 
-import { checkBridge, listSystemPrinters, testPrinter } from '../services/PrintService'; 
+import { subscribePrinters, savePrinter, removePrinter, validatePrinter, addDiscoveredPrinter, isDiscoveredAdded } from '../services/PrinterStore'; 
+import { checkBridge, listSystemPrinters, testPrinter, discoverPrinters } from '../services/PrintService'; 
 
 const SOUND_OPTIONS = [
   { name: 'Classic Bell', icon: 'notifications-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
@@ -17,6 +17,8 @@ const SOUND_OPTIONS = [
   { name: 'Digital Alert', icon: 'pulse-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2870/2870-preview.mp3' },
   { name: 'Notification Tone', icon: 'volume-medium-outline', url: 'https://assets.mixkit.co/active_storage/sfx/2872/2872-preview.mp3' },
 ];
+
+const PRINT_BRIDGE_URL = 'https://drive.google.com/file/d/1LFw7z9G5GdWAfgdtpkHRskA6ytG9XO0l/view?usp=sharing';  // PrintBridge-Setup.exe ka link
 
 const PRINTER_MODES = [
   { key: 'network', label: 'WiFi printer' },
@@ -111,6 +113,9 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
   const [testingId, setTestingId] = useState('');
   const [systemPrinters, setSystemPrinters] = useState([]);
   const [sysOpen, setSysOpen] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [found, setFound] = useState(null);   // null = abhi search nahi hua
+  const [addingKey, setAddingKey] = useState('');
 
   const screenWidth = useScreenWidth();
   const isWide = screenWidth >= 768;
@@ -524,6 +529,44 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
       r.ok ? 'Printer se test slip nikalni chahiye.' : r.error
     );
   };
+
+    const handleScanPrinters = async () => {
+    setScanning(true);
+    setFound(null);
+    try {
+      const r = await discoverPrinters();
+      setFound(r);
+      setBridgeOnline(true);
+    } catch (e) {
+      setBridgeOnline(false);
+      wa.notify('Printer search nahi hua', e.message);
+    }
+    setScanning(false);
+  };
+
+  const handleAddFound = async (item, key) => {
+    setAddingKey(key);
+    try {
+      await addDiscoveredPrinter(clientId, item, printers);
+      wa.notify('✓ Printer add ho gaya', `"${item.name}" ab aapka default printer hai. "Test" dabake ek slip nikal ke check kar lein.`);
+    } catch (e) {
+      wa.notify('Add nahi hua', e.message);
+    }
+    setAddingKey('');
+  };
+
+  const handleDownloadBridge = () => {
+    if (Platform.OS === 'web') window.open(PRINT_BRIDGE_URL, '_blank');
+    else wa.notify('Computer se kholein', 'Print Bridge sirf Windows laptop/desktop par install hota hai. Dashboard ko computer ke browser me kholein.');
+  };
+
+  useEffect(() => {
+    if (bridgeOnline !== false) return;
+    const t = setInterval(async () => {
+      if (await checkBridge()) setBridgeOnline(true);
+    }, 4000);
+    return () => clearInterval(t);
+  }, [bridgeOnline]);
 
   if (loading) {
     return (
@@ -1219,6 +1262,69 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
     </View>
   );
 
+    /* ── Mile hue printers ── */
+  const renderFoundPrinters = () => {
+    if (!found) return null;
+    const rows = [
+      ...found.usb.map((p) => ({
+        key: `u:${p.name}`,
+        label: 'USB',
+        name: p.name,
+        sub: p.kind === 'usb' ? 'USB se juda hua' : 'Is computer me installed',
+        item: { type: 'usb', name: p.name },
+      })),
+      ...found.network.map((p) => ({
+        key: `n:${p.ip}`,
+        label: 'WIFI',
+        name: p.name,
+        sub: `WiFi · ${p.ip}`,
+        item: { type: 'network', name: p.name, ip: p.ip, port: p.port },
+      })),
+    ];
+
+    return (
+      <View style={{ marginTop: 14 }}>
+        <Text style={styles.fieldLabel}>Mile hue printers: jo chahiye use "Add" karein</Text>
+        {rows.length === 0 ? (
+          <Text style={styles.errText}>
+            Koi printer nahi mila. Printer ON hai aur is computer ke same WiFi / network par hai? USB printer ho to
+            uska driver install hona chahiye.
+          </Text>
+        ) : (
+          rows.map((r) => {
+            const added = isDiscoveredAdded(r.item, printers);
+            return (
+              <View key={r.key} style={styles.inboxSenderRow}>
+                <View style={styles.inboxSenderLeft}>
+                  <View style={styles.inboxVendorBadge}>
+                    <Text style={styles.inboxVendorBadgeText}>{r.label}</Text>
+                  </View>
+                  <View style={{ marginLeft: 8, flex: 1 }}>
+                    <Text style={styles.inboxSenderNum} numberOfLines={1}>{r.name}</Text>
+                    <Text style={styles.inboxSenderDate} numberOfLines={1}>{r.sub}</Text>
+                  </View>
+                </View>
+                {added ? (
+                  <Text style={[styles.printerMiniText, { color: '#16a34a' }]}>✓ Added</Text>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.printerMiniBtn, { backgroundColor: '#16a34a', borderColor: '#16a34a' }]}
+                    onPress={() => handleAddFound(r.item, r.key)}
+                    disabled={!!addingKey}
+                  >
+                    {addingKey === r.key
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={[styles.printerMiniText, { color: '#fff' }]}>Add</Text>}
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })
+        )}
+      </View>
+    );
+  };
+
   /* ── Printers card ── */
   const renderPrinters = () => {
     const f = printerForm;
@@ -1255,10 +1361,19 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
         {bridgeOnline === false ? (
           <View style={styles.warnBox}>
             <Ionicons name="warning-outline" size={14} color="#b45309" style={{ marginTop: 1 }} />
-            <Text style={styles.warnText}>
-              Is computer par Print Bridge chalu nahi hai. WiFi / USB (direct) printer ke liye ise chalana zaroori hai
-              (start-bridge.bat). Browser print iske bina chalta rahega.
-            </Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.warnText, { flex: 0 }]}>
+                WiFi / USB (direct) printer ke liye is computer par "Print Bridge" chahiye. Download karke file par
+                double-click karein. Install hote hi ye status apne aap "Online" ho jayega.
+              </Text>
+              <TouchableOpacity style={[styles.btn, styles.btnPrimary, { marginTop: 10 }]} onPress={handleDownloadBridge}>
+                <Ionicons name="download-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
+                <Text style={styles.btnText}>Print Bridge Download Karein</Text>
+              </TouchableOpacity>
+              <Text style={[styles.warnText, { flex: 0, marginTop: 8 }]}>
+                Browser "Keep" puche to Keep karein. "Windows protected your PC" aaye to "More info" dabakar "Run anyway" karein.
+              </Text>
+            </View>
           </View>
         ) : null}
 
@@ -1426,10 +1541,31 @@ export default function ClientSettingsScreen({ clientId, clientEmail, onNavigate
             </View>
           </View>
         ) : (
-          <TouchableOpacity style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]} onPress={() => openPrinterForm(null)}>
-            <Ionicons name="add-circle-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
-            <Text style={styles.btnText}>Printer Add Karein</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnPrimary, { marginTop: 12 }, scanning && styles.btnDisabled]}
+              onPress={handleScanPrinters}
+              disabled={scanning}
+            >
+              {scanning ? (
+                <>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={[styles.btnText, { marginLeft: 8 }]}>Printers dhundh rahe hain…</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="search-outline" size={15} color="#fff" style={{ marginRight: 6 }} />
+                  <Text style={styles.btnText}>Printers Dhundhein</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            {renderFoundPrinters()}
+
+            <TouchableOpacity onPress={() => openPrinterForm(null)} style={{ alignSelf: 'center', marginTop: 14 }}>
+              <Text style={styles.qrEditText}>Printer nahi mila? Manually add karein</Text>
+            </TouchableOpacity>
+          </>
         )}
       </View>
     );
