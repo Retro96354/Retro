@@ -16,8 +16,19 @@ const { execFile } = require('child_process');
 const { buildReceipt } = require('./escpos');
 const { isPrivateIp, run, listSystemPrinters, discoverAll } = require('./discover');
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const IS_WIN = process.platform === 'win32';
+
+// .exe double-click par crash ho to window turant band ho jati hai aur error dikhta nahi.
+// Isliye error print karke kuch der ruk jate hain (start-bridge.bat loop me bhi safe hai).
+const EXIT_DELAY_MS = 15000;
+function fatal(err) {
+  console.error('\n[bridge FATAL]', err && err.stack ? err.stack : err);
+  console.error(`Ye window ${EXIT_DELAY_MS / 1000} second me band hogi...`);
+  setTimeout(() => process.exit(1), EXIT_DELAY_MS);
+}
+process.on('uncaughtException', fatal);
+process.on('unhandledRejection', fatal);
 
 // ---------- config ----------
 // .exe (pkg) me config.json exe ke bagal me hoti hai, normal Node me server.js ke bagal me
@@ -220,7 +231,9 @@ const server = http.createServer(async (req, res) => {
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
     console.log(`Print Bridge pehle se chal raha hai (port ${config.port}).`);
-    process.exit(0);
+    // double-click par message padhne ka time mile
+    setTimeout(() => process.exit(0), process.pkg ? 5000 : 0);
+    return;
   }
   throw e;
 });
@@ -228,4 +241,5 @@ server.on('error', (e) => {
 // sirf is computer se hi access ho (127.0.0.1)
 server.listen(config.port, '127.0.0.1', () => {
   console.log(`Print Bridge v${VERSION} chal raha hai: http://127.0.0.1:${config.port}`);
+  console.log('Is window ko band mat karo, printing ke liye ye chalti rehni chahiye.');
 });
