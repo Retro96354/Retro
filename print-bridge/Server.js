@@ -4,6 +4,7 @@
 //   - mode "network"    -> printer ke IP:port (default 9100) pe raw ESC/POS bytes
 //   - mode "usb_silent" -> computer me installed printer ke naam pe, bina print dialog ke
 //
+// /discover : USB/installed + same-network WiFi printers khud dhundhta hai (discover.js)
 // Koi npm dependency nahi hai, sirf Node.js (v16+) chahiye.
 
 const http = require('http');
@@ -13,15 +14,19 @@ const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
 const { buildReceipt } = require('./escpos');
+const { isPrivateIp, run, listSystemPrinters, discoverAll } = require('./discover');
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const IS_WIN = process.platform === 'win32';
 
 // ---------- config ----------
+// .exe (pkg) me config.json exe ke bagal me hoti hai, normal Node me server.js ke bagal me
+const BASE_DIR = process.pkg ? path.dirname(process.execPath) : __dirname;
+
 function loadConfig() {
   const defaults = { port: 17890, allowedOrigins: [], token: '' };
   try {
-    const raw = fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8');
+    const raw = fs.readFileSync(path.join(BASE_DIR, 'config.json'), 'utf8');
     return { ...defaults, ...JSON.parse(raw) };
   } catch (e) {
     return defaults;
@@ -30,17 +35,6 @@ function loadConfig() {
 const config = loadConfig();
 
 // ---------- helpers ----------
-function isPrivateIp(ip) {
-  if (net.isIPv4(ip) === false) return false;
-  const [a, b] = ip.split('.').map(Number);
-  return (
-    a === 10 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    a === 127
-  );
-}
-
 function corsHeaders(req) {
   const origin = req.headers.origin;
   const allowed = config.allowedOrigins || [];
@@ -115,34 +109,13 @@ function printNetwork(ip, port, buffer) {
 }
 
 // ---------- USB (system printer) ----------
-function run(cmd, args) {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { windowsHide: true, timeout: 15000 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error((stderr || err.message || '').trim()));
-      resolve(stdout);
-    });
-  });
-}
-
-async function listSystemPrinters() {
-  if (IS_WIN) {
-    const out = await run('powershell', [
-      '-NoProfile',
-      '-Command',
-      'Get-CimInstance Win32_Printer | Select-Object Name,Default,WorkOffline | ConvertTo-Json -Compress',
-    ]);
-    if (!out.trim()) return [];
-    const parsed = JSON.parse(out);
-    const arr = Array.isArray(parsed) ? parsed : [parsed];
-    return arr.map((p) => ({ name: p.Name, isDefault: !!p.Default, offline: !!p.WorkOffline }));
-  }
-  // macOS / Linux (CUPS)
-  const out = await run('lpstat', ['-e']);
-  return out
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((name) => ({ name, isDefault: false, offline: false }));
+// raw-print.ps1 ko PowerShell ke liye real file chahiye; .exe me bundled ho to temp me nikalte hain
+function getPsScriptPath() {
+  const src = path.join(__dirname, 'raw-print.ps1');
+  if (!process.pkg) return src;
+  const out = path.join(os.tmpdir(), 'print-bridge-raw-print.ps1');
+  fs.writeFileSync(out, fs.readFileSync(src));
+  return out;
 }
 
 async function printSystem(printerName, buffer) {
@@ -156,7 +129,7 @@ async function printSystem(printerName, buffer) {
         '-ExecutionPolicy',
         'Bypass',
         '-File',
-        path.join(__dirname, 'raw-print.ps1'),
+        getPsScriptPath(),
         '-PrinterName',
         printerName,
         '-FilePath',
@@ -214,6 +187,11 @@ const server = http.createServer(async (req, res) => {
       return send(req, res, 200, { ok: true, version: VERSION, platform: process.platform });
     }
 
+    if (req.method === 'GET' && url === '/discover') {
+      const result = await discoverAll();
+      return send(req, res, 200, { ok: true, ...result });
+    }
+
     if (req.method === 'GET' && url === '/printers/system') {
       const printers = await listSystemPrinters();
       return send(req, res, 200, { ok: true, printers });
@@ -236,6 +214,15 @@ const server = http.createServer(async (req, res) => {
     console.error('[bridge error]', err.message);
     return send(req, res, 500, { ok: false, error: err.message });
   }
+});
+
+// Bridge pehle se chal raha ho (jaise Windows startup + manual start) to dusri copy chup-chaap band
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.log(`Print Bridge pehle se chal raha hai (port ${config.port}).`);
+    process.exit(0);
+  }
+  throw e;
 });
 
 // sirf is computer se hi access ho (127.0.0.1)
