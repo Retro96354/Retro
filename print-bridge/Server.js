@@ -12,19 +12,37 @@ const net = require('net');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const { buildReceipt } = require('./escpos');
 const { isPrivateIp, run, listSystemPrinters, discoverAll } = require('./discover');
 
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const IS_WIN = process.platform === 'win32';
 
-// .exe double-click par crash ho to window turant band ho jati hai aur error dikhta nahi.
-// Isliye error print karke kuch der ruk jate hain (start-bridge.bat loop me bhi safe hai).
-const EXIT_DELAY_MS = 15000;
+// .exe (Windows) = background app: window nahi dikhti, startup me apne aap chalta hai.
+// Pehli baar double-click ("setup mode") par khud ko INSTALL_DIR me copy karke startup me jod deta hai.
+const IS_PKG_WIN = !!process.pkg && IS_WIN;
+const INSTALL_DIR = path.join(process.env.LOCALAPPDATA || os.homedir(), 'MigmePrintBridge');
+const INSTALLED_EXE = path.join(INSTALL_DIR, 'print-bridge.exe');
+const SETUP_MODE = IS_PKG_WIN && path.resolve(process.execPath).toLowerCase() !== INSTALLED_EXE.toLowerCase();
+
+// Window nahi hai to console.log kahin dikhega nahi, isliye log file me likhte hain
+if (IS_PKG_WIN) {
+  const LOG_FILE = path.join(INSTALL_DIR, 'bridge.log');
+  const toFile = (...a) => {
+    try {
+      fs.mkdirSync(INSTALL_DIR, { recursive: true });
+      fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${a.map(String).join(' ')}\n`);
+    } catch (e) {}
+  };
+  console.log = toFile;
+  console.error = toFile;
+}
+
+// Normal Node / bat se chalane par crash ke baad error padhne ka time dete hain
+const EXIT_DELAY_MS = IS_PKG_WIN ? 500 : 15000;
 function fatal(err) {
-  console.error('\n[bridge FATAL]', err && err.stack ? err.stack : err);
-  console.error(`Ye window ${EXIT_DELAY_MS / 1000} second me band hogi...`);
+  console.error('[bridge FATAL]', err && err.stack ? err.stack : err);
   setTimeout(() => process.exit(1), EXIT_DELAY_MS);
 }
 process.on('uncaughtException', fatal);
@@ -238,8 +256,48 @@ server.on('error', (e) => {
   throw e;
 });
 
-// sirf is computer se hi access ho (127.0.0.1)
-server.listen(config.port, '127.0.0.1', () => {
-  console.log(`Print Bridge v${VERSION} chal raha hai: http://127.0.0.1:${config.port}`);
-  console.log('Is window ko band mat karo, printing ke liye ye chalti rehni chahiye.');
-});
+// ---------- self-install (sirf .exe, setup mode) ----------
+function msgBox(text) {
+  execFile(
+    'powershell',
+    ['-NoProfile', '-WindowStyle', 'Hidden', '-Command',
+     `Add-Type -AssemblyName PresentationFramework; [void][System.Windows.MessageBox]::Show('${text}','Print Bridge')`],
+    { windowsHide: true },
+    () => process.exit(0),
+  );
+}
+
+function installSelf() {
+  try {
+    fs.mkdirSync(INSTALL_DIR, { recursive: true });
+    // purani copy chal rahi ho to band karo, warna file lock rehti hai
+    try { execFileSync('taskkill', ['/F', '/IM', 'print-bridge.exe'], { windowsHide: true, stdio: 'ignore' }); } catch (e) {}
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+    fs.copyFileSync(process.execPath, INSTALLED_EXE);
+    execFileSync('reg', ['add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+      '/v', 'MigmePrintBridge', '/t', 'REG_SZ', '/d', `"${INSTALLED_EXE}"`, '/f'], { windowsHide: true });
+    spawn(INSTALLED_EXE, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } catch (e) {
+    console.error('[install error]', e.message);
+    return msgBox('Install nahi ho paya. Log: %LOCALAPPDATA%\\MigmePrintBridge\\bridge.log');
+  }
+  // 2 second baad check: bridge sach me chal raha hai?
+  setTimeout(() => {
+    http
+      .get({ host: '127.0.0.1', port: config.port, path: '/health', timeout: 3000 }, (res) => {
+        res.resume();
+        msgBox('Print Bridge install ho gaya aur background me chal raha hai. Ab computer chalu hone par apne aap start hoga.');
+      })
+      .on('error', () => msgBox('Install ho gaya, par bridge start nahi hua. Agar purani Print Bridge window khuli hai to use band karke dobara try karo.'));
+  }, 2000);
+}
+
+if (SETUP_MODE) {
+  installSelf();
+} else {
+  // sirf is computer se hi access ho (127.0.0.1)
+  server.listen(config.port, '127.0.0.1', () => {
+    console.log(`Print Bridge v${VERSION} chal raha hai: http://127.0.0.1:${config.port}`);
+    if (!IS_PKG_WIN) console.log('Is window ko band mat karo, printing ke liye ye chalti rehni chahiye.');
+  });
+}
