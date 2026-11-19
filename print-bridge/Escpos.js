@@ -164,7 +164,7 @@ function buildReceipt(receipt, opts = {}) {
         push(GS, 0x4c, ml & 0xff, (ml >> 8) & 0xff); // GS L: left margin
         if (pw > 0) {
           push(GS, 0x57, pw & 0xff, (pw >> 8) & 0xff); // GS W: print area width
-          chars = Math.floor(pw / DOT_PER_CHAR);
+          chars = Math.floor(pw / DOT_PER_CHAR) & ~1; // even rakho
         }
         break;
       }
