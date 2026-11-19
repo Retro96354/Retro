@@ -187,7 +187,7 @@ function testReceipt() {
 
 // ---------- print dispatcher ----------
 async function dispatchPrint({ mode, ip, port, printerName, receipt }) {
-  const buffer = buildReceipt(receipt);
+  const buffer = buildReceipt(receipt, { chars: config.paperChars });
   if (mode === 'network') {
     if (!ip) throw new Error('ip required hai');
     await printNetwork(ip, parseInt(port, 10) || 9100, buffer);
