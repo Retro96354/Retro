@@ -1,12 +1,12 @@
 // services/PrintFormatter.js
 // Order -> "receipt ops". Layout DashboardScreen.printViaBrowser (HTML receipt) ke hisaab se hai.
 //
-// Ops: text, sep, feed, cut, row, box, boxrow, qr
+// Ops: text, sep, feed, cut, row, box, boxrow, qr, page
 //   { t:'row',    left, right, bold?, size? }     -> left label + right value, ek hi line me
 //   { t:'box',    text, size? }                   -> border wala box, text center (COD / ONLINE)
 //   { t:'boxrow', cells:[a, b] }                  -> border wala 2-cell box (train | coach/seat)
 //   { t:'qr',     data, size? }                   -> native ESC/POS QR, center
-//   { t:'page',   marginLeft, printWidth }        -> OPTIONAL: GS L + GS W (dots). Escpos.js me handler chahiye.
+//   { t:'page',   marginLeft, printWidth }        -> GS L + GS W (dots), left/right margin
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Page setup — browser receipt ka size/margin yahin se control hota hai.
@@ -18,9 +18,14 @@ const PAPER = PAPER_MM === 58 ? { chars: 32, dots: 384 } : { chars: 48, dots: 57
 
 const MARGIN_LEFT_DOTS  = 21;   // ≈ padding-left 10px
 const MARGIN_RIGHT_DOTS = 34;   // ≈ padding-right 16px
-const USE_PAGE_MARGIN   = false; // Escpos.js me 'page' op add hone ke baad true karna
+const USE_PAGE_MARGIN   = true; // escpos.js me 'page' handler hai
 const TOP_PAD_LINES     = 1;    // ≈ padding-top 10px
-const BOLD_ALL          = true;  // browser body font-weight: 900 → poori receipt bold
+const BOLD_ALL          = true; // browser body font-weight: 900 → poori receipt bold
+
+// Line width (chars). Margin on ho to bridge ki width ke barabar (even) rakhi hai.
+const PW = USE_PAGE_MARGIN
+  ? Math.floor((PAPER.dots - MARGIN_LEFT_DOTS - MARGIN_RIGHT_DOTS) / 12) & ~1
+  : PAPER.chars;
 
 const pick = (obj, keys, fallback = '') => {
   for (const k of keys) {
@@ -60,6 +65,10 @@ const COD_TYPES = ['COD', 'CASH', 'CASH_ON_DELIVERY'];
 export function formatOrderReceipt(order = {}, options = {}) {
   const { businessName = '', paymentId = '', cut = true } = options;
 
+  // ── business name: lamba ho to normal size, warna double ──
+  const name = businessName || 'E-Catering Orders';
+  const nameSize = name.length > PW / 2 ? 1 : 2;
+
   // ── payment ──
   const rawPayType = String(order.paymentType || 'ONLINE').toUpperCase().replace(/\s+/g, '_');
   const isCOD = COD_TYPES.includes(rawPayType);
@@ -92,7 +101,7 @@ export function formatOrderReceipt(order = {}, options = {}) {
 
   ops.push(
     // Business name (browser: 18px, bold, center)
-    text(businessName || 'E-Catering Orders', { align: 'center', bold: true, size: 2 }),
+    text(name, { align: 'center', bold: true, size: nameSize }),
     gap(),
 
     // Details
@@ -157,7 +166,6 @@ export function formatTestReceipt() {
 }
 
 // Preview modal ke liye: ops -> displayable lines (monospace)
-const PW = PAPER.chars;
 const padRow = (l, r) => {
   const g = Math.max(1, PW - l.length - r.length);
   return l + ' '.repeat(g) + r;
