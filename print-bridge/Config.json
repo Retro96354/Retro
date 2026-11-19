@@ -1,5 +1,6 @@
 {
   "port": 17890,
   "allowedOrigins": [],
-  "token": ""
+  "token": "",
+  "paperChars": 48
 }
