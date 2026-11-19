@@ -1,26 +1,12 @@
 // services/PrintFormatter.js
-// Order -> "receipt ops". Layout DashboardScreen.printViaBrowser (HTML receipt) ke hisaab se hai.
+// Order -> "receipt ops". Layout purane browser/HTML receipt (DashboardScreen.printViaBrowser) jaisa hi hai.
 //
-// Ops: text, sep, feed, cut, row, box, boxrow, qr
+// Purane ops: text, sep, feed, cut
+// NAYE ops (print-bridge ke Escpos.js me support chahiye):
 //   { t:'row',    left, right, bold?, size? }     -> left label + right value, ek hi line me
 //   { t:'box',    text, size? }                   -> border wala box, text center (COD / ONLINE)
 //   { t:'boxrow', cells:[a, b] }                  -> border wala 2-cell box (train | coach/seat)
 //   { t:'qr',     data, size? }                   -> native ESC/POS QR, center
-//   { t:'page',   marginLeft, printWidth }        -> OPTIONAL: GS L + GS W (dots). Escpos.js me handler chahiye.
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Page setup — browser receipt ka size/margin yahin se control hota hai.
-// Browser: @page 80mm, body 72mm, padding 10px (left) / 16px (right).
-//   → 80mm printer pe: left margin ≈ 21 dots, right ≈ 34 dots.
-// ─────────────────────────────────────────────────────────────────────────────
-const PAPER_MM = 80; // 80 → 576 dots / 48 chars | 58 → 384 dots / 32 chars
-const PAPER = PAPER_MM === 58 ? { chars: 32, dots: 384 } : { chars: 48, dots: 576 };
-
-const MARGIN_LEFT_DOTS  = 21;   // ≈ padding-left 10px
-const MARGIN_RIGHT_DOTS = 34;   // ≈ padding-right 16px
-const USE_PAGE_MARGIN   = false; // Escpos.js me 'page' op add hone ke baad true karna
-const TOP_PAD_LINES     = 1;    // ≈ padding-top 10px
-const BOLD_ALL          = true;  // browser body font-weight: 900 → poori receipt bold
 
 const pick = (obj, keys, fallback = '') => {
   for (const k of keys) {
@@ -30,13 +16,9 @@ const pick = (obj, keys, fallback = '') => {
   return fallback;
 };
 
-const text = (t, opts = {}) => ({ t: 'text', text: String(t), bold: BOLD_ALL, ...opts });
-const row  = (left, right, opts = {}) => ({ t: 'row', left: String(left), right: String(right), bold: BOLD_ALL, ...opts });
-const sep  = () => ({ t: 'sep' });
-const gap  = () => ({ t: 'feed', n: 1 }); // browser ke <hr> ka 7px+7px margin ≈ 1 line
-
-// "COD" -> "C O D"  (browser payment-box ka letter-spacing: 4px)
-const spaced = (s) => String(s).split('').join(' ');
+const text  = (t, opts = {}) => ({ t: 'text', text: String(t), ...opts });
+const row   = (left, right, opts = {}) => ({ t: 'row', left: String(left), right: String(right), ...opts });
+const sep   = () => ({ t: 'sep' });
 
 // Dashboard ke extractTrainNo jaisa hi
 export const extractTrainNo = (trainInfo) => {
@@ -71,29 +53,16 @@ export function formatOrderReceipt(order = {}, options = {}) {
   const trainNo = extractTrainNo(order.trainInfo);
   const coachSeat = `${order.coach || '-'}/${order.seat || '-'}`;
 
-  // ── UPI QR: sirf COD + paymentId ho tabhi (browser jaisa) ──
+  // ── UPI QR: sirf COD + paymentId ho tabhi ──
   const showQr = !!paymentId && isCOD;
-  const upiUrl =
-    `upi://pay?pa=${paymentId}&pn=${encodeURIComponent(order.vendorName || 'Vendor')}` +
-    `&am=${amountToCollect}&cu=INR`;
+  const upiUrl = `upi://pay?pa=${paymentId}&pn=${order.vendorName || 'Vendor'}&am=${amountToCollect}&cu=INR`;
 
   const remark = order.remark && String(order.remark).trim() !== '' ? String(order.remark).trim() : '';
 
-  const ops = [];
-
-  if (USE_PAGE_MARGIN) {
-    ops.push({
-      t: 'page',
-      marginLeft: MARGIN_LEFT_DOTS,
-      printWidth: PAPER.dots - MARGIN_LEFT_DOTS - MARGIN_RIGHT_DOTS,
-    });
-  }
-  if (TOP_PAD_LINES > 0) ops.push({ t: 'feed', n: TOP_PAD_LINES });
-
-  ops.push(
-    // Business name (browser: 18px, bold, center)
+  const ops = [
+    // Restaurant / business name
     text(businessName || 'E-Catering Orders', { align: 'center', bold: true, size: 2 }),
-    gap(),
+    sep(),
 
     // Details
     row('Order No.', order.orderNo || order.pnr || 'N/A'),
@@ -102,31 +71,30 @@ export function formatOrderReceipt(order = {}, options = {}) {
     row('Time',      order.deliveryTime || fmtNowTime()),
     row('Customer',  order.customerName || 'Customer'),
     row('Mobile',    order.contactNo || 'N/A'),
-    gap(),
-
-    // Items — dashed line sirf Item/Qty header ke upar-neeche (browser jaisa)
     sep(),
+
+    // Items
     row('Item', 'Qty', { bold: true }),
     sep(),
     ...(Array.isArray(order.items) ? order.items : []).map((it) =>
       row(pick(it, ['name', 'itemName', 'title'], 'Item'), pick(it, ['quantity', 'qty'], 1))
     ),
-    gap(),
+    sep(),
 
     // Totals
     row('Remarks:', remark),
     row('Total:', `Rs. ${totalAmount}`, { bold: true }),
     row('Amount to collect:', `Rs. ${amountToCollect}`, { bold: true }),
 
-    // COD / ONLINE box + train box (dono ek dusre se juday hue)
-    gap(),
-    { t: 'box', text: spaced(paymentLabel), size: 2 },
+    // COD / ONLINE box + train box
+    { t: 'feed', n: 1 },
+    { t: 'box', text: paymentLabel, size: 2 },
     { t: 'boxrow', cells: [trainNo, coachSeat] },
-  );
+  ];
 
   if (showQr) {
     ops.push(
-      gap(),
+      { t: 'feed', n: 1 },
       { t: 'qr', data: upiUrl, size: 6 },
       text('Scan & Pay', { align: 'center', bold: true }),
       text(paymentId, { align: 'center' }),
@@ -134,7 +102,7 @@ export function formatOrderReceipt(order = {}, options = {}) {
   }
 
   ops.push(
-    gap(),
+    { t: 'feed', n: 1 },
     text('www.imperiial.tech', { align: 'center' }),
     { t: 'feed', n: 3 },
   );
@@ -156,11 +124,11 @@ export function formatTestReceipt() {
   ];
 }
 
-// Preview modal ke liye: ops -> displayable lines (monospace)
-const PW = PAPER.chars;
+// Preview modal ke liye: ops -> displayable lines (32 char monospace)
+const PW = 32;
 const padRow = (l, r) => {
-  const g = Math.max(1, PW - l.length - r.length);
-  return l + ' '.repeat(g) + r;
+  const gap = Math.max(1, PW - l.length - r.length);
+  return l + ' '.repeat(gap) + r;
 };
 
 export function receiptToPreviewLines(receipt = []) {
@@ -173,9 +141,7 @@ export function receiptToPreviewLines(receipt = []) {
     } else if (op.t === 'sep') {
       out.push({ text: '-'.repeat(PW), align: 'center', bold: false, big: false });
     } else if (op.t === 'feed') {
-      for (let i = 0; i < (op.n || 1); i++) {
-        out.push({ text: ' ', align: 'left', bold: false, big: false });
-      }
+      out.push({ text: ' ', align: 'left', bold: false, big: false });
     } else if (op.t === 'box') {
       out.push({ text: '+' + '-'.repeat(PW - 2) + '+', align: 'center', bold: false, big: false });
       out.push({ text: op.text, align: 'center', bold: true, big: true });
