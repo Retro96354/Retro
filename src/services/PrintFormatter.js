@@ -147,9 +147,9 @@ export function formatOrderReceipt(order = {}, options = {}) {
     text('www.imperiial.tech', { align: 'center' }),
     { t: 'feed', n: 3 },
   );
-  if (cut) ops.push({ t: 'cut' });
+   if (cut) ops.push({ t: 'cut' });
 
-  return ops;
+  return toTextOps(ops);
 }
 
 // Settings ka "Test Print"
@@ -195,5 +195,80 @@ export function receiptToPreviewLines(receipt = []) {
       out.push({ text: '[ UPI QR ]', align: 'center', bold: true, big: false });
     }
   });
+  return out;
+}
+// ── Purane bridge ke liye: row/box/boxrow ko text lines me badalna ──
+const LW = 46; // 48-col printer pe safe width
+
+const wrapWords = (s, w) => {
+  const out = [];
+  let line = '';
+  for (let word of String(s).split(' ')) {
+    while (word.length > w) {
+      if (line) { out.push(line); line = ''; }
+      out.push(word.slice(0, w));
+      word = word.slice(w);
+    }
+    if (!word) continue;
+    if (!line) line = word;
+    else if (line.length + 1 + word.length <= w) line += ' ' + word;
+    else { out.push(line); line = word; }
+  }
+  out.push(line);
+  return out;
+};
+
+const rowToLines = (l, r, w) => {
+  l = String(l); r = String(r);
+  if (!r) return wrapWords(l, w);
+  if (l.length + r.length + 1 <= w) return [l + ' '.repeat(w - l.length - r.length) + r];
+  if (r.length <= Math.floor(w * 0.4)) {
+    const parts = wrapWords(l, w - r.length - 1);
+    const last = parts.pop();
+    return [...parts, last + ' '.repeat(w - last.length - r.length) + r];
+  }
+  return [l, ...wrapWords(r, w).map((x) => ' '.repeat(w - x.length) + x)];
+};
+
+const ctr = (s, w) => {
+  s = String(s).slice(0, w);
+  const l = Math.floor((w - s.length) / 2);
+  return ' '.repeat(l) + s + ' '.repeat(w - s.length - l);
+};
+
+export function toTextOps(ops, w = LW) {
+  const out = [];
+  const T = (t, o = {}) => out.push({ t: 'text', text: t, align: 'left', bold: true, ...o });
+  const border = '+' + '-'.repeat(w - 2) + '+';
+
+  for (const op of ops) {
+    switch (op.t) {
+      case 'page':
+        break; // purane bridge me nahi chalta, skip
+      case 'sep':
+        T('-'.repeat(w), { bold: false });
+        break;
+      case 'row':
+        rowToLines(op.left, op.right, w).forEach((l) => T(l, { bold: !!op.bold }));
+        break;
+      case 'box': {
+        const hw = Math.floor(w / 2); // double size me 1 char = 2 columns
+        T(border, { bold: false });
+        T('|' + ctr(op.text, hw - 2) + '|', { size: 2 });
+        T(border, { bold: false });
+        break;
+      }
+      case 'boxrow': {
+        const inner = w - 3;
+        const lw = Math.floor(inner / 2);
+        const rw = inner - lw;
+        T('|' + ctr(op.cells[0], lw) + '|' + ctr(op.cells[1], rw) + '|');
+        T(border, { bold: false });
+        break;
+      }
+      default:
+        out.push(op); // text, feed, qr, cut jaise ke taise
+    }
+  }
   return out;
 }
