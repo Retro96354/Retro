@@ -16,7 +16,7 @@ const { execFile, execFileSync, spawn } = require('child_process');
 const { buildReceipt } = require('./escpos');
 const { isPrivateIp, run, listSystemPrinters, discoverAll } = require('./discover');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const IS_WIN = process.platform === 'win32';
 
 // .exe (Windows) = background app: window nahi dikhti, startup me apne aap chalta hai.
