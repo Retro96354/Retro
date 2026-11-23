@@ -4,10 +4,11 @@
 // Ops:
 //   { t:'text', text, align, bold, size }   { t:'sep' }   { t:'feed', n }   { t:'cut' }
 //   { t:'qr', data, size }                  -> native QR (GS ( k)
-//   { t:'row', left, right, bold }          -> left label + right value, ek line me (lamba ho to wrap)
-//   { t:'box', text, size }                 -> border + center text (COD / ONLINE)
+//   { t:'row', left, right, bold, tall }    -> left label + right value, ek line me (tall = double height)
+//   { t:'box', text, size, join }           -> border + center text (COD / ONLINE). join = neeche boxrow se judta hai
 //   { t:'boxrow', cells:[a,b] }             -> 2-cell box (train | coach/seat), box ke neeche judta hai
 //   { t:'page', marginLeft, printWidth }    -> GS L + GS W (dots), left/right margin
+//   { t:'spacing', n }                      -> line spacing (dots), rows ke beech gap
 //
 // Row/box ke liye line width (chars) chahiye: 80mm = 48, 58mm = 32.
 // config.json me "paperChars" se aata hai (default 48). 'page' op aaye to width uske hisaab se ghat jaati hai.
@@ -19,6 +20,14 @@ const LF = 0x0a;
 const ALIGN = { left: 0, center: 1, right: 2 };
 const DEFAULT_CHARS = 48;
 const DOT_PER_CHAR = 12; // Font A
+const DEFAULT_SPACING = 30; // dots
+
+// CP437 box-drawing bytes (printer me ESC t 0 se select hota hai)
+const BX = {
+  TL: '\xC9', TR: '\xBB', BL: '\xC8', BR: '\xBC',
+  H: '\xCD', V: '\xBA',
+  LT: '\xCC', RT: '\xB9', TD: '\xCB', BU: '\xCA',
+};
 
 function sanitize(text) {
   return String(text == null ? '' : text)
@@ -82,18 +91,28 @@ function buildReceipt(receipt, opts = {}) {
   }
 
   let chars = parseInt(opts.chars, 10) || DEFAULT_CHARS;
+  let spacing = DEFAULT_SPACING; // current default line spacing (dots)
 
   const chunks = [];
   const push = (...bytes) => chunks.push(Buffer.from(bytes));
   const line = (s) => { chunks.push(Buffer.from(s, 'latin1')); push(LF); };
-  const style = (bold, big) => {
-    push(ESC, 0x45, bold ? 1 : 0);
-    push(GS, 0x21, big ? 0x11 : 0x00);
-  };
-  const reset = () => style(false, false);
-  const border = () => '+' + '-'.repeat(chars - 2) + '+';
 
-  push(ESC, 0x40); // initialize printer
+  // o: { big, tall, sp }  sp = explicit line spacing (dots)
+  const style = (bold, o = {}) => {
+    const big = !!o.big;
+    const tall = !!o.tall;
+    push(ESC, 0x45, bold ? 1 : 0);
+    push(GS, 0x21, big ? 0x11 : tall ? 0x01 : 0x00);
+    const sp = o.sp != null
+      ? o.sp
+      : (big || tall ? Math.max(spacing, big ? 52 : 48) : spacing);
+    push(ESC, 0x33, Math.min(Math.max(sp, 0), 255));
+  };
+  const reset = () => style(false);
+
+  push(ESC, 0x40);       // initialize printer
+  push(ESC, 0x74, 0);    // code page PC437 (box lines ke liye)
+  push(ESC, 0x33, spacing);
 
   for (const op of receipt) {
     if (!op || typeof op !== 'object') continue;
@@ -101,19 +120,20 @@ function buildReceipt(receipt, opts = {}) {
     switch (op.t) {
       case 'text': {
         push(ESC, 0x61, ALIGN[op.align] ?? 0);
-        style(op.bold, op.size === 2);
+        style(op.bold, { big: op.size === 2 });
         line(sanitize(op.text));
         reset();
         break;
       }
       case 'sep': {
         push(ESC, 0x61, 1);
+        reset();
         line('-'.repeat(chars));
         break;
       }
       case 'row': {
         push(ESC, 0x61, 0);
-        style(op.bold, false);
+        style(op.bold, { tall: !!op.tall });
         for (const l of rowLines(op.left, op.right, chars)) line(l);
         reset();
         break;
@@ -122,13 +142,24 @@ function buildReceipt(receipt, opts = {}) {
         const txt = oneLine(op.text);
         const big = op.size === 2 && txt.length <= Math.floor(chars / 2) - 2;
         const w = big ? Math.floor(chars / 2) : chars; // double size me ek char = 2 columns
+        const inner = chars - 3;
+        const lw = Math.floor(inner / 2);
+        const rw = inner - lw;
         push(ESC, 0x61, 0);
-        style(false, false);
-        line(border());
-        style(true, big);
-        line('|' + center(txt, w - 2) + '|');
+
+        style(false, { sp: 24 }); // lines jud jayein, gap na rahe
+        line(BX.TL + BX.H.repeat(chars - 2) + BX.TR);
+
+        style(true, { big, sp: big ? 48 : 24 });
+        line(BX.V + center(txt, w - 2) + BX.V);
+
+        style(false, { sp: 24 });
+        if (op.join) {
+          line(BX.LT + BX.H.repeat(lw) + BX.TD + BX.H.repeat(rw) + BX.RT);
+        } else {
+          line(BX.BL + BX.H.repeat(chars - 2) + BX.BR);
+        }
         reset();
-        line(border());
         break;
       }
       case 'boxrow': {
@@ -137,10 +168,16 @@ function buildReceipt(receipt, opts = {}) {
         const lw = Math.floor(inner / 2);
         const rw = inner - lw;
         push(ESC, 0x61, 0);
-        style(true, false);
-        line('|' + center(oneLine(cells[0]), lw) + '|' + center(oneLine(cells[1]), rw) + '|');
+
+        style(true, { tall: true, sp: 48 });
+        line(
+          BX.V + center(oneLine(cells[0]), lw) +
+          BX.V + center(oneLine(cells[1]), rw) + BX.V
+        );
+
+        style(false, { sp: 24 });
+        line(BX.BL + BX.H.repeat(lw) + BX.BU + BX.H.repeat(rw) + BX.BR);
         reset();
-        line(border());
         break;
       }
       case 'qr': {
@@ -150,11 +187,11 @@ function buildReceipt(receipt, opts = {}) {
         const len = data.length + 3;
         push(ESC, 0x61, 1); // center
         push(GS, 0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00); // QR model 2
-        push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, size); // module size
-        push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31); // error correction M
+        push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, size);       // module size
+        push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, 0x31);       // error correction M
         push(GS, 0x28, 0x6b, len & 0xff, (len >> 8) & 0xff, 0x31, 0x50, 0x30); // store data
         chunks.push(data);
-        push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30); // print
+        push(GS, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30);       // print
         push(LF);
         break;
       }
@@ -164,8 +201,13 @@ function buildReceipt(receipt, opts = {}) {
         push(GS, 0x4c, ml & 0xff, (ml >> 8) & 0xff); // GS L: left margin
         if (pw > 0) {
           push(GS, 0x57, pw & 0xff, (pw >> 8) & 0xff); // GS W: print area width
-          chars = Math.floor(pw / DOT_PER_CHAR) & ~1; // even rakho
+          chars = Math.floor(pw / DOT_PER_CHAR) & ~1;  // even rakho
         }
+        break;
+      }
+      case 'spacing': {
+        spacing = Math.min(Math.max(parseInt(op.n, 10) || DEFAULT_SPACING, 24), 120);
+        push(ESC, 0x33, spacing);
         break;
       }
       case 'feed': {
@@ -174,7 +216,7 @@ function buildReceipt(receipt, opts = {}) {
         break;
       }
       case 'cut': {
-        push(ESC, 0x64, 3); // thoda paper aage
+        push(ESC, 0x64, 3);         // thoda paper aage
         push(GS, 0x56, 0x42, 0x00); // partial cut
         break;
       }
@@ -185,6 +227,7 @@ function buildReceipt(receipt, opts = {}) {
   }
 
   push(ESC, 0x61, 0); // align left reset
+  push(ESC, 0x32);    // default line spacing wapas
   return Buffer.concat(chunks);
 }
 
