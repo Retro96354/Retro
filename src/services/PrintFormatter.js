@@ -1,12 +1,13 @@
 // services/PrintFormatter.js
 // Order -> "receipt ops". Layout DashboardScreen.printViaBrowser (HTML receipt) ke hisaab se hai.
 //
-// Ops: text, sep, feed, cut, row, box, boxrow, qr, page
-//   { t:'row',    left, right, bold?, size? }     -> left label + right value, ek hi line me
-//   { t:'box',    text, size? }                   -> border wala box, text center (COD / ONLINE)
-//   { t:'boxrow', cells:[a, b] }                  -> border wala 2-cell box (train | coach/seat)
-//   { t:'qr',     data, size? }                   -> native ESC/POS QR, center
-//   { t:'page',   marginLeft, printWidth }        -> GS L + GS W (dots), left/right margin
+// Ops: text, sep, feed, cut, row, box, boxrow, qr, page, spacing
+//   { t:'row',     left, right, bold?, tall? }    -> left label + right value, ek hi line me (tall = double height)
+//   { t:'box',     text, size?, join? }           -> border wala box, text center (COD / ONLINE). join = neeche boxrow se judega
+//   { t:'boxrow',  cells:[a, b] }                 -> border wala 2-cell box (train | coach/seat)
+//   { t:'qr',      data, size? }                  -> native ESC/POS QR, center
+//   { t:'page',    marginLeft, printWidth }       -> GS L + GS W (dots), left/right margin
+//   { t:'spacing', n }                            -> line spacing (dots) -> rows ke beech gap
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Page setup — browser receipt ka size/margin yahin se control hota hai.
@@ -21,6 +22,12 @@ const MARGIN_RIGHT_DOTS = 34;   // ≈ padding-right 16px
 const USE_PAGE_MARGIN   = true; // escpos.js me 'page' handler hai
 const TOP_PAD_LINES     = 1;    // ≈ padding-top 10px
 const BOLD_ALL          = true; // browser body font-weight: 900 → poori receipt bold
+
+// ── Spacing / size tuning ──
+const LINE_SPACING = 40;    // dots (printer default ~30). Zyada = rows me zyada gap
+const ITEM_TALL    = true;  // Item/Qty + items rows double-height (browser 15px jaisa)
+const TOTAL_TALL   = true;  // Total / Amount to collect double-height
+const DETAIL_TALL  = false; // Order No/Vendor/Date... (true karoge to ye bhi bade honge)
 
 // Line width (chars). Margin on ho to bridge ki width ke barabar (even) rakhi hai.
 const PW = USE_PAGE_MARGIN
@@ -97,6 +104,7 @@ export function formatOrderReceipt(order = {}, options = {}) {
       printWidth: PAPER.dots - MARGIN_LEFT_DOTS - MARGIN_RIGHT_DOTS,
     });
   }
+  ops.push({ t: 'spacing', n: LINE_SPACING });
   if (TOP_PAD_LINES > 0) ops.push({ t: 'feed', n: TOP_PAD_LINES });
 
   ops.push(
@@ -105,31 +113,35 @@ export function formatOrderReceipt(order = {}, options = {}) {
     gap(),
 
     // Details
-    row('Order No.', order.orderNo || order.pnr || 'N/A'),
-    row('Vendor',    order.vendorName || 'N/A'),
-    row('Date',      fmtDate(order.deliveryDate)),
-    row('Time',      order.deliveryTime || fmtNowTime()),
-    row('Customer',  order.customerName || 'Customer'),
-    row('Mobile',    order.contactNo || 'N/A'),
+    row('Order No.', order.orderNo || order.pnr || 'N/A', { tall: DETAIL_TALL }),
+    row('Vendor',    order.vendorName || 'N/A',           { tall: DETAIL_TALL }),
+    row('Date',      fmtDate(order.deliveryDate),         { tall: DETAIL_TALL }),
+    row('Time',      order.deliveryTime || fmtNowTime(),  { tall: DETAIL_TALL }),
+    row('Customer',  order.customerName || 'Customer',    { tall: DETAIL_TALL }),
+    row('Mobile',    order.contactNo || 'N/A',            { tall: DETAIL_TALL }),
     gap(),
 
     // Items — dashed line sirf Item/Qty header ke upar-neeche (browser jaisa)
     sep(),
-    row('Item', 'Qty', { bold: true }),
+    row('Item', 'Qty', { bold: true, tall: ITEM_TALL }),
     sep(),
     ...(Array.isArray(order.items) ? order.items : []).map((it) =>
-      row(pick(it, ['name', 'itemName', 'title'], 'Item'), pick(it, ['quantity', 'qty'], 1))
+      row(
+        pick(it, ['name', 'itemName', 'title'], 'Item'),
+        pick(it, ['quantity', 'qty'], 1),
+        { tall: ITEM_TALL }
+      )
     ),
     gap(),
 
     // Totals
-    row('Remarks:', remark),
-    row('Total:', `Rs. ${totalAmount}`, { bold: true }),
-    row('Amount to collect:', `Rs. ${amountToCollect}`, { bold: true }),
+    row('Remarks:', remark, { tall: DETAIL_TALL }),
+    row('Total:', `Rs. ${totalAmount}`, { bold: true, tall: TOTAL_TALL }),
+    row('Amount to collect:', `Rs. ${amountToCollect}`, { bold: true, tall: TOTAL_TALL }),
 
     // COD / ONLINE box + train box (dono ek dusre se juday hue)
     gap(),
-    { t: 'box', text: spaced(paymentLabel), size: 2 },
+    { t: 'box', text: spaced(paymentLabel), size: 2, join: true },
     { t: 'boxrow', cells: [trainNo, coachSeat] },
   );
 
@@ -147,9 +159,11 @@ export function formatOrderReceipt(order = {}, options = {}) {
     text('www.imperiial.tech', { align: 'center' }),
     { t: 'feed', n: 3 },
   );
-   if (cut) ops.push({ t: 'cut' });
+  if (cut) ops.push({ t: 'cut' });
 
-  return toTextOps(ops);
+  // NOTE: ops seedhe return hote hain (toTextOps nahi) taaki escpos.js
+  // ke row/box/boxrow/page/spacing handlers chalein.
+  return ops;
 }
 
 // Settings ka "Test Print"
@@ -177,7 +191,7 @@ export function receiptToPreviewLines(receipt = []) {
     if (op.t === 'text') {
       out.push({ text: op.text, align: op.align || 'left', bold: !!op.bold, big: op.size === 2 });
     } else if (op.t === 'row') {
-      out.push({ text: padRow(op.left, op.right), align: 'left', bold: !!op.bold, big: false });
+      out.push({ text: padRow(op.left, op.right), align: 'left', bold: !!op.bold, big: !!op.tall });
     } else if (op.t === 'sep') {
       out.push({ text: '-'.repeat(PW), align: 'center', bold: false, big: false });
     } else if (op.t === 'feed') {
@@ -187,7 +201,9 @@ export function receiptToPreviewLines(receipt = []) {
     } else if (op.t === 'box') {
       out.push({ text: '+' + '-'.repeat(PW - 2) + '+', align: 'center', bold: false, big: false });
       out.push({ text: op.text, align: 'center', bold: true, big: true });
-      out.push({ text: '+' + '-'.repeat(PW - 2) + '+', align: 'center', bold: false, big: false });
+      if (!op.join) {
+        out.push({ text: '+' + '-'.repeat(PW - 2) + '+', align: 'center', bold: false, big: false });
+      }
     } else if (op.t === 'boxrow') {
       out.push({ text: `${op.cells[0]}  |  ${op.cells[1]}`, align: 'center', bold: true, big: false });
       out.push({ text: '+' + '-'.repeat(PW - 2) + '+', align: 'center', bold: false, big: false });
@@ -197,7 +213,10 @@ export function receiptToPreviewLines(receipt = []) {
   });
   return out;
 }
-// ── Purane bridge ke liye: row/box/boxrow ko text lines me badalna ──
+
+// ── Purane bridge ke liye (optional): row/box/boxrow ko text lines me badalna ──
+// Ab formatOrderReceipt ise use nahi karta. Agar kisi purane bridge ko
+// support karna ho to: toTextOps(formatOrderReceipt(...)) call karo.
 const LW = 46; // 48-col printer pe safe width
 
 const wrapWords = (s, w) => {
@@ -244,6 +263,7 @@ export function toTextOps(ops, w = LW) {
   for (const op of ops) {
     switch (op.t) {
       case 'page':
+      case 'spacing':
         break; // purane bridge me nahi chalta, skip
       case 'sep':
         T('-'.repeat(w), { bold: false });
