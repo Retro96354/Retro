@@ -6,16 +6,22 @@
 //   printer.mode === 'network'    -> bridge se WiFi printer ke IP:port pe
 //
 // Printer nahi mila (ya koi printer configured nahi) -> browser flow, yaani purane clients pe koi change nahi.
+//
+// Bridge version check: bridge >= NEW_OPS_MIN_VERSION ho to naye ops (row/box/boxrow/spacing)
+// bhejte hain, warna purane bridge ke liye toTextOps se plain text lines.
 
-import { formatOrderReceipt, formatTestReceipt } from './PrintFormatter';
+import { formatOrderReceipt, formatTestReceipt, toTextOps } from './PrintFormatter';
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:17890';
+const NEW_OPS_MIN_VERSION = '1.3.0';
 
 let bridge = { url: DEFAULT_BRIDGE_URL, token: '' };
+let bridgeInfo = { version: null, checkedAt: 0 }; // /health ka cache
 
 export function configurePrintBridge({ url, token } = {}) {
   if (url) bridge.url = url.replace(/\/+$/, '');
   if (token !== undefined) bridge.token = token;
+  bridgeInfo = { version: null, checkedAt: 0 };
 }
 
 // ---------- bridge calls ----------
@@ -49,10 +55,34 @@ async function bridgeFetch(path, { method = 'GET', body, timeoutMs = 6000 } = {}
 
 export async function checkBridge() {
   try {
-    await bridgeFetch('/health', { timeoutMs: 2500 });
+    const data = await bridgeFetch('/health', { timeoutMs: 2500 });
+    bridgeInfo = { version: data.version || '0.0.0', checkedAt: Date.now() };
     return true;
   } catch (e) {
     return false;
+  }
+}
+
+// "1.2.0" vs "1.3.0" compare
+const versionGte = (v, min) => {
+  const a = String(v || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const b = String(min).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] || 0) > (b[i] || 0)) return true;
+    if ((a[i] || 0) < (b[i] || 0)) return false;
+  }
+  return true;
+};
+
+// Bridge ka version (30 sec cache). Pata na chale to '0.0.0' (yaani purana maano).
+async function getBridgeVersion() {
+  if (bridgeInfo.version && Date.now() - bridgeInfo.checkedAt < 30000) return bridgeInfo.version;
+  try {
+    const data = await bridgeFetch('/health', { timeoutMs: 2500 });
+    bridgeInfo = { version: data.version || '0.0.0', checkedAt: Date.now() };
+    return bridgeInfo.version;
+  } catch (e) {
+    return '0.0.0';
   }
 }
 
@@ -122,7 +152,14 @@ export async function printOrder(order, printer, { browserPrint, allowFallback =
   }
 
   try {
-    const receipt = formatOrderReceipt(order, receiptOptions);
+    let receipt = formatOrderReceipt(order, receiptOptions);
+
+    // Purana bridge naye ops (row/box/boxrow) skip kar deta hai -> plain text me badlo
+    const version = await getBridgeVersion();
+    if (!versionGte(version, NEW_OPS_MIN_VERSION)) {
+      receipt = toTextOps(receipt);
+    }
+
     await bridgeFetch('/print', { method: 'POST', body: toBridgePayload(printer, receipt) });
     return { ok: true, mode: printer.mode };
   } catch (e) {
